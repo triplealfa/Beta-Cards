@@ -1,0 +1,52 @@
+ADDING CUSTOM CARDS TO BETA CARDS
+==================================
+
+This folder is for your cards. Add or update card files here and Beta Cards will load them.
+
+HOW TO ADD YOUR CARDS
+====================
+
+1. Create your card files (see "Supported Files" below)
+2. Place them in THIS FOLDER (the /cards folder)
+3. Launch Beta Cards - it will automatically load your custom cards
+
+Supported files:
+
+- Card images: .png, .jpg, .jpeg, .webp, .gif, .bmp
+- Card data: .json
+
+Recommended pattern:
+
+- MistressA.png
+- MistressA.json
+
+Example JSON:
+
+{
+  "id": "mistress-a",
+  "name": "Mistress A",
+  "value": "3",
+  "faction": "Emerald Meadows",
+  "set_name": "My Custom Set",
+  "card_number": "0001",
+  "artist_name": "Artist Name",
+  "card_author": "Card Author",
+  "effect": "Mistress A commands you to do X",
+  "image": "MistressA.png"
+}
+
+IMPORTANT NOTES
+===============
+
+- When making cards it is crucial that the filename is unique. To achieve this it is recommended you include the set name, card number, and card name in the filename while ensuring the set name does not already exist.
+  Recommended pattern: [Set Name] [Card Number] - [Card Name]
+
+- The image and JSON file should have the same base name.
+
+- If a matching JSON file exists, Beta Cards will load the card details from it.
+
+- If there is only an image, Beta Cards can still import it as an image-only card.
+
+- You can also use the Card Maker tab in the app to create the JSON file without editing JSON by hand.
+
+- If you create a custom card with the same ID as an official card, your custom version will be used instead.
