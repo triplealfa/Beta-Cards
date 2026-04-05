@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -73,7 +74,7 @@ from PySide6.QtWidgets import (
 
 APP_DISPLAY_NAME = "Beta Cards"
 APP_STORAGE_NAME = "BetaCards"
-APP_VERSION = "0.2.9"
+APP_VERSION = "0.3.0"
 APP_WINDOWS_APP_ID = "TripleAlfa.BetaCards"
 APP_RELEASE_NOTES = """
 The first alpha release of Beta Cards.
@@ -203,6 +204,9 @@ class DeckListWidget(QListWidget):
 
 
 class ZoomableCardView(QGraphicsView):
+    cardPreviewRequested = Signal()
+    cardCloseRequested = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self.scene = QGraphicsScene(self)
@@ -214,6 +218,8 @@ class ZoomableCardView(QGraphicsView):
         self.original_pixmap = QPixmap()
         self.user_zoom = 1.0
         self.max_user_zoom = 6.0
+        self.manual_zoom_enabled = True
+        self.manual_pan_enabled = True
         self._is_dragging = False
         self._last_drag_pos = None
 
@@ -228,10 +234,10 @@ class ZoomableCardView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setDragMode(QGraphicsView.NoDrag)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setStyleSheet("border: 1px solid #666; background: #111;")
-        self.setMinimumSize(620, 760)
+        self.setMinimumSize(120, 160)
 
     def has_image(self) -> bool:
         return not self.original_pixmap.isNull()
@@ -329,6 +335,9 @@ class ZoomableCardView(QGraphicsView):
         if not self.has_image():
             event.accept()
             return
+        if not self.manual_zoom_enabled:
+            event.accept()
+            return
         angle = event.angleDelta().y()
         if angle == 0:
             event.accept()
@@ -350,7 +359,14 @@ class ZoomableCardView(QGraphicsView):
         event.accept()
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton and self.has_image():
+        if event.button() == Qt.RightButton and self.has_image():
+            if self.manual_zoom_enabled or self.manual_pan_enabled:
+                self.cardCloseRequested.emit()
+            else:
+                self.cardPreviewRequested.emit()
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton and self.has_image() and self.manual_pan_enabled:
             self._is_dragging = True
             self._last_drag_pos = event.position().toPoint()
             self.viewport().setCursor(Qt.ClosedHandCursor)
@@ -1123,12 +1139,16 @@ class MainWindow(QMainWindow):
         self.options_tab = QWidget()
         self.rules_tab = QWidget()
         self.about_tab = QWidget()
+        self.card_maker_tab_scroll = self.wrap_tab_in_scroll_area(self.card_maker_tab)
+        self.options_tab_scroll = self.wrap_tab_in_scroll_area(self.options_tab)
+        self.rules_tab_scroll = self.wrap_tab_in_scroll_area(self.rules_tab)
+        self.about_tab_scroll = self.wrap_tab_in_scroll_area(self.about_tab)
         tabs.addTab(self.play_tab, "Play")
         tabs.addTab(self.builder_tab, "Deck Builder")
-        tabs.addTab(self.card_maker_tab, "Card Maker")
-        tabs.addTab(self.options_tab, "Options")
-        tabs.addTab(self.rules_tab, "Rules")
-        tabs.addTab(self.about_tab, "About")
+        tabs.addTab(self.card_maker_tab_scroll, "Card Maker")
+        tabs.addTab(self.options_tab_scroll, "Options")
+        tabs.addTab(self.rules_tab_scroll, "Rules")
+        tabs.addTab(self.about_tab_scroll, "About")
 
         self.build_builder_tab()
         self.build_play_tab()
@@ -1136,7 +1156,15 @@ class MainWindow(QMainWindow):
         self.build_options_tab()
         self.build_rules_tab()
         self.build_about_tab()
-        tabs.setCurrentWidget(self.play_tab)
+        tabs.setCurrentIndex(0)
+
+    def wrap_tab_in_scroll_area(self, content: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setWidget(content)
+        return scroll
 
     def build_options_tab(self) -> None:
         layout = QVBoxLayout(self.options_tab)
@@ -1420,7 +1448,7 @@ class MainWindow(QMainWindow):
         preview_and_form = QGridLayout()
         self.card_maker_preview = QLabel("Select an image to preview the card")
         self.card_maker_preview.setAlignment(Qt.AlignCenter)
-        self.card_maker_preview.setMinimumHeight(520)
+        self.card_maker_preview.setMinimumHeight(320)
         self.card_maker_preview.setStyleSheet("border: 1px solid #666;")
         preview_and_form.addWidget(self.card_maker_preview, 0, 0)
 
@@ -1566,7 +1594,7 @@ class MainWindow(QMainWindow):
         self.builder_pool_list.cardRightClicked.connect(self.show_builder_pool_context_menu)
 
         pool_instructions = QLabel(
-            "Left-click once to select a card, double-click to add one copy, and right-click to open a larger preview."
+            "Left-click once to select a card, double-click to add one copy, double-click in the deck to remove one copy, and right-click to open a larger preview."
         )
         pool_instructions.setWordWrap(True)
         pool_layout.addWidget(pool_instructions)
@@ -1714,11 +1742,20 @@ class MainWindow(QMainWindow):
         self.play_history_tabs.addTab(self.draw_log_list, "Draw Log (0)")
         self.play_history_tabs.setVisible(False)
         left_layout.addWidget(self.play_history_tabs, 1)
-        grid.addWidget(left_panel, 0, 0)
+        left_scroll = self.wrap_tab_in_scroll_area(left_panel)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        grid.addWidget(left_scroll, 0, 0)
 
         self.play_image_view = ZoomableCardView()
+        self.play_image_view.manual_zoom_enabled = False
+        self.play_image_view.manual_pan_enabled = False
+        self.play_image_view.cardPreviewRequested.connect(self.show_current_play_card_preview)
         center_layout = QVBoxLayout()
         center_layout.addWidget(self.play_image_view, 1)
+        self.play_image_hint_label = QLabel("Right-click the card image to open the larger zoomable preview.")
+        self.play_image_hint_label.setAlignment(Qt.AlignCenter)
+        self.play_image_hint_label.setWordWrap(True)
+        center_layout.addWidget(self.play_image_hint_label)
         grid.addLayout(center_layout, 0, 1)
 
         right = QVBoxLayout()
@@ -1922,7 +1959,11 @@ class MainWindow(QMainWindow):
             "font-size: 22px; font-weight: bold; padding: 12px 24px;"
         )
         right.addWidget(self.draw_card_button)
-        grid.addLayout(right, 0, 2)
+        right_panel = QWidget()
+        right_panel.setLayout(right)
+        right_scroll = self.wrap_tab_in_scroll_area(right_panel)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        grid.addWidget(right_scroll, 0, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 2)
         grid.setColumnStretch(2, 1)
@@ -3332,6 +3373,26 @@ class MainWindow(QMainWindow):
         )
         self.open_card_preview_dialog(card)
 
+    def show_current_play_card_preview(self) -> None:
+        if not self.play_current_card_id:
+            return
+        play_deck = self.get_selected_play_deck()
+        card_data = self.get_card_for_deck_entry(self.play_current_card_id, play_deck)
+        card = Card(
+            id=card_data.get("id", self.play_current_card_id),
+            name=card_data.get("name", self.play_current_card_id),
+            value=card_data.get("value", ""),
+            faction=card_data.get("faction", ""),
+            effect=card_data.get("effect", ""),
+            set_name=card_data.get("set_name", ""),
+            card_number=card_data.get("card_number", ""),
+            artist_name=card_data.get("artist_name", ""),
+            card_author=card_data.get("card_author", ""),
+            image_path=card_data.get("image_path", ""),
+            source=card_data.get("source", ""),
+        )
+        self.open_card_preview_dialog(card)
+
     def get_selected_play_deck(self) -> Optional[Deck]:
         deck_id = self.play_deck_combo.currentData()
         return next((deck for deck in self.decks if deck.id == deck_id), None)
@@ -3471,31 +3532,20 @@ class MainWindow(QMainWindow):
         if pixmap.isNull():
             preview_width = min(700, max_width)
             preview_height = min(900, max_height)
-            scaled_preview = QPixmap()
         else:
-            scaled_preview = pixmap.scaled(
-                max_width,
-                max_height,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            preview_width = scaled_preview.width()
-            preview_height = scaled_preview.height()
+            preview_width = min(max_width, max(480, pixmap.width()))
+            preview_height = min(max_height, max(640, pixmap.height()))
 
         dialog.resize(preview_width, preview_height)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        image_label = QLabel()
-        image_label.setAlignment(Qt.AlignCenter)
-        image_label.setStyleSheet("border: 1px solid #666;")
-        image_label.setMinimumSize(preview_width, preview_height)
-        if scaled_preview.isNull():
-            self.show_card_preview_from_path(card.image_path, image_label)
-        else:
-            image_label.setPixmap(scaled_preview)
-            image_label.setText("")
-        layout.addWidget(image_label)
+        preview_view = ZoomableCardView()
+        preview_view.setStyleSheet("border: 1px solid #666; background: #111;")
+        preview_view.setMinimumSize(preview_width, preview_height)
+        preview_view.set_image_path(card.image_path)
+        preview_view.cardCloseRequested.connect(dialog.close)
+        layout.addWidget(preview_view)
         self.active_preview_dialog = dialog
         dialog.finished.connect(self.on_preview_dialog_closed)
         dialog.show()
