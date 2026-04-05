@@ -73,7 +73,7 @@ from PySide6.QtWidgets import (
 
 APP_DISPLAY_NAME = "Beta Cards"
 APP_STORAGE_NAME = "BetaCards"
-APP_VERSION = "0.2.8"
+APP_VERSION = "0.2.9"
 APP_WINDOWS_APP_ID = "TripleAlfa.BetaCards"
 APP_RELEASE_NOTES = """
 The first alpha release of Beta Cards.
