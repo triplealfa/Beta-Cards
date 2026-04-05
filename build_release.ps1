@@ -32,6 +32,7 @@ if (-not (Test-Path $python)) {
     beta_cards.py
 
 $releaseDir = Join-Path $PSScriptRoot "dist\BetaCards"
+$sourceNoticePath = Join-Path $releaseDir "SOURCE_CODE.txt"
 
 # Copy icons to _internal/icons in release
 $internalIconsDir = Join-Path $releaseDir "_internal\icons"
@@ -55,9 +56,27 @@ if (Test-Path $publicCardsDir) {
 New-Item -ItemType Directory -Force -Path $publicCardsDir | Out-Null
 Copy-Item -Force (Join-Path $PSScriptRoot "cards\How to add cards.txt") $publicCardsDir
 
+# Ship a source pointer next to the executable for GPL compliance.
+$sourceNotice = @'
+Beta Cards source code
+======================
+
+This release executable is distributed under the GNU General Public License,
+version 3 or later.
+
+The corresponding source code for this release is available at:
+https://github.com/triplealfa/Beta-Cards
+
+If the repository is not yet public at the moment you received this build,
+the release should not be distributed publicly until the source code is made
+available at the address above.
+'@
+Set-Content -Path $sourceNoticePath -Value $sourceNotice
+
 Write-Host ""
 Write-Host "Release build complete:"
 Write-Host "  dist\\BetaCards\\BetaCards.exe"
+Write-Host "  dist\\BetaCards\\SOURCE_CODE.txt (source code location)"
 Write-Host "  dist\\BetaCards\\_internal\\icons (app icons)"
 Write-Host "  dist\\BetaCards\\_internal\\rules (rules content)"
 Write-Host "  dist\\BetaCards\\cards (user folder with guidance)"

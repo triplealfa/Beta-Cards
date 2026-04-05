@@ -59,6 +59,7 @@ The Card Maker tab supports these metadata fields as well: `faction`, `set_name`
 1. Install PyInstaller with `python -m pip install pyinstaller`.
 2. Run `powershell -ExecutionPolicy Bypass -File .\build_release.ps1`.
 3. The packaged app will be created at `dist\BetaCards\BetaCards.exe`.
+4. The release folder will also include `dist\BetaCards\SOURCE_CODE.txt`, which points to the public source repository for the build.
 
 ## Data locations
 
