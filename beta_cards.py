@@ -782,11 +782,33 @@ class MainWindow(QMainWindow):
 
     def save_window_state(self) -> None:
         """Save current window geometry and state to config."""
-        geom = self.last_windowed_geometry or self.geometry()
+        if self.isMaximized():
+            normal_geom = self.normalGeometry()
+            if normal_geom.isValid() and normal_geom.width() >= 400 and normal_geom.height() >= 300:
+                geom = QRect(normal_geom)
+            else:
+                geom = self.last_windowed_geometry or self.geometry()
+        else:
+            geom = self.geometry()
+            self.last_windowed_geometry = QRect(geom)
         self.config["window_size"] = [geom.width(), geom.height()]
         self.config["window_position"] = [geom.x(), geom.y()]
         self.config["window_maximized"] = self.isMaximized()
         self.save_app_config()
+
+    def default_window_geometry_for_screen(self, available: QRect) -> QRect:
+        default_width = min(1450, max(900, int(available.width() * 0.85)))
+        default_height = min(900, max(650, int(available.height() * 0.85)))
+        default_width = min(default_width, available.width())
+        default_height = min(default_height, available.height())
+        x = available.center().x() - default_width // 2
+        y = available.center().y() - default_height // 2
+        return QRect(x, y, default_width, default_height)
+
+    def looks_like_maximized_window_size(self, width: int, height: int, available: QRect) -> bool:
+        width_close = width >= int(available.width() * 0.97)
+        height_close = height >= int(available.height() * 0.97)
+        return width_close and height_close
 
     def restore_window_state(self) -> None:
         """Restore window geometry and state from config, with validation."""
@@ -810,6 +832,10 @@ class MainWindow(QMainWindow):
         if x == 0 and y == 0:
             primary_screen = screens[0]
             geom = primary_screen.availableGeometry()
+            if is_maximized and self.looks_like_maximized_window_size(width, height, geom):
+                safe_geom = self.default_window_geometry_for_screen(geom)
+                width = safe_geom.width()
+                height = safe_geom.height()
             x = geom.center().x() - width // 2
             y = geom.center().y() - height // 2
             position_valid = True
@@ -819,6 +845,12 @@ class MainWindow(QMainWindow):
             for screen in screens:
                 available_geometry = screen.availableGeometry()
                 if available_geometry.contains(x + 100, y + 100):
+                    if is_maximized and self.looks_like_maximized_window_size(width, height, available_geometry):
+                        safe_geom = self.default_window_geometry_for_screen(available_geometry)
+                        width = safe_geom.width()
+                        height = safe_geom.height()
+                        x = safe_geom.x()
+                        y = safe_geom.y()
                     position_valid = True
                     break
 
