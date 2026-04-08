@@ -565,6 +565,11 @@ class MainWindow(QMainWindow):
         self.card_icon_cache: Dict[str, tuple[QIcon, Optional[tuple[int, int]]]] = {}
         self.decks: List[Deck] = self.storage.load_decks()
         self.active_preview_dialog: Optional[QDialog] = None
+        self.active_preview_view: Optional[ZoomableCardView] = None
+        self.active_preview_prev_button: Optional[QPushButton] = None
+        self.active_preview_next_button: Optional[QPushButton] = None
+        self.active_preview_source: str = ""
+        self.active_preview_card_id: str = ""
         self.consume_preview_close_release = False
         self.current_deck_id: Optional[str] = None
         self.builder_entries: Dict[str, int] = {}
@@ -2598,7 +2603,7 @@ class MainWindow(QMainWindow):
         card = self.library_by_id.get(item.data(Qt.UserRole))
         if not card:
             return
-        self.open_card_preview_dialog(card)
+        self.open_card_preview_dialog(card, source="builder_pool")
 
     def render_builder(self) -> None:
         self.refresh_builder_pool_filters()
@@ -2986,7 +2991,7 @@ class MainWindow(QMainWindow):
                 image_path=card_data.get("image_path", ""),
                 source=card_data.get("source", ""),
             )
-        self.open_card_preview_dialog(card)
+        self.open_card_preview_dialog(card, source="deck_entries")
 
     def update_selected_entry_quantity(self, value: int) -> None:
         current = self.deck_entries_list.currentItem()
@@ -3566,6 +3571,10 @@ class MainWindow(QMainWindow):
                 self.active_preview_dialog.close()
                 return True
 
+        if event.type() == QEvent.KeyPress and self.active_preview_dialog is not None:
+            if self.handle_active_preview_keypress(event):
+                return True
+
         if event.type() == QEvent.MouseButtonPress:
             global_pos = event.globalPosition().toPoint()
             if not self.active_preview_dialog.frameGeometry().contains(global_pos):
@@ -3579,7 +3588,123 @@ class MainWindow(QMainWindow):
 
         return super().eventFilter(watched, event)
 
-    def open_card_preview_dialog(self, card: Card) -> None:
+    def handle_active_preview_keypress(self, event: QKeyEvent) -> bool:
+        key = event.key()
+        if key not in (Qt.Key_Left, Qt.Key_Right):
+            return False
+
+        if self.active_preview_source == "builder_pool":
+            direction = -1 if key == Qt.Key_Left else 1
+            self.navigate_builder_pool_preview(direction)
+            return True
+
+        if self.active_preview_source == "deck_entries":
+            direction = -1 if key == Qt.Key_Left else 1
+            self.navigate_deck_entry_preview(direction)
+            return True
+
+        return False
+
+    def navigate_deck_entry_preview(self, direction: int) -> None:
+        if self.active_preview_source != "deck_entries":
+            return
+        if self.deck_entries_list.count() <= 0:
+            return
+
+        current_row = self.deck_entries_list.currentRow()
+        if current_row < 0:
+            current_row = 0
+        new_row = max(0, min(self.deck_entries_list.count() - 1, current_row + direction))
+        if new_row == current_row:
+            self.update_active_preview_navigation_buttons()
+            return
+
+        self.deck_entries_list.setCurrentRow(new_row)
+        item = self.deck_entries_list.item(new_row)
+        if item is None:
+            self.update_active_preview_navigation_buttons()
+            return
+        card_id = item.data(Qt.UserRole)
+        card = self.library_by_id.get(card_id)
+        if card is None:
+            card_data = self.get_card_for_deck_entry(card_id, self.get_current_saved_deck())
+            card = Card(
+                id=card_data.get("id", card_id),
+                name=card_data.get("name", card_id),
+                value=card_data.get("value", ""),
+                faction=card_data.get("faction", ""),
+                effect=card_data.get("effect", ""),
+                set_name=card_data.get("set_name", ""),
+                card_number=card_data.get("card_number", ""),
+                artist_name=card_data.get("artist_name", ""),
+                card_author=card_data.get("card_author", ""),
+                image_path=card_data.get("image_path", ""),
+                source=card_data.get("source", ""),
+            )
+        self.update_active_preview_card(card)
+
+    def update_active_preview_navigation_buttons(self) -> None:
+        if self.active_preview_prev_button is None or self.active_preview_next_button is None:
+            return
+
+        if self.active_preview_source == "builder_pool":
+            if self.builder_pool_list.count() <= 0:
+                self.active_preview_prev_button.setEnabled(False)
+                self.active_preview_next_button.setEnabled(False)
+                return
+            current_row = self.builder_pool_list.currentRow()
+            if current_row < 0:
+                current_row = 0
+            self.active_preview_prev_button.setEnabled(current_row > 0)
+            self.active_preview_next_button.setEnabled(current_row < self.builder_pool_list.count() - 1)
+            return
+
+        if self.active_preview_source == "deck_entries":
+            if self.deck_entries_list.count() <= 0:
+                self.active_preview_prev_button.setEnabled(False)
+                self.active_preview_next_button.setEnabled(False)
+                return
+            current_row = self.deck_entries_list.currentRow()
+            if current_row < 0:
+                current_row = 0
+            self.active_preview_prev_button.setEnabled(current_row > 0)
+            self.active_preview_next_button.setEnabled(current_row < self.deck_entries_list.count() - 1)
+            return
+
+    def navigate_builder_pool_preview(self, direction: int) -> None:
+        if self.active_preview_source != "builder_pool":
+            return
+        if self.builder_pool_list.count() <= 0:
+            return
+
+        current_row = self.builder_pool_list.currentRow()
+        if current_row < 0:
+            current_row = 0
+        new_row = max(0, min(self.builder_pool_list.count() - 1, current_row + direction))
+        if new_row == current_row:
+            self.update_active_preview_navigation_buttons()
+            return
+
+        self.builder_pool_list.setCurrentRow(new_row)
+        item = self.builder_pool_list.item(new_row)
+        if item is None:
+            self.update_active_preview_navigation_buttons()
+            return
+        card = self.library_by_id.get(item.data(Qt.UserRole))
+        if card is None:
+            self.update_active_preview_navigation_buttons()
+            return
+        self.update_active_preview_card(card)
+
+    def update_active_preview_card(self, card: Card) -> None:
+        if self.active_preview_dialog is None or self.active_preview_view is None:
+            return
+        self.active_preview_card_id = card.id
+        self.active_preview_dialog.setWindowTitle(card.name)
+        self.active_preview_view.set_image_path(card.image_path)
+        self.update_active_preview_navigation_buttons()
+
+    def open_card_preview_dialog(self, card: Card, source: str = "") -> None:
         if self.active_preview_dialog is not None:
             self.active_preview_dialog.close()
         dialog = QDialog(self, Qt.Popup | Qt.FramelessWindowHint)
@@ -3601,13 +3726,53 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        content_row = QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(0)
+
         preview_view = ZoomableCardView()
         preview_view.setStyleSheet("border: 1px solid #666; background: #111;")
         preview_view.setMinimumSize(preview_width, preview_height)
         preview_view.set_image_path(card.image_path)
         preview_view.cardCloseRequested.connect(dialog.close)
-        layout.addWidget(preview_view)
+        if source in ("builder_pool", "deck_entries"):
+            prev_button = QPushButton("<")
+            prev_button.setFixedWidth(42)
+            prev_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            prev_button.setFocusPolicy(Qt.NoFocus)
+            prev_button.setStyleSheet("font-size: 22px; font-weight: bold;")
+            if source == "builder_pool":
+                prev_button.clicked.connect(lambda: self.navigate_builder_pool_preview(-1))
+            else:
+                prev_button.clicked.connect(lambda: self.navigate_deck_entry_preview(-1))
+            content_row.addWidget(prev_button)
+            self.active_preview_prev_button = prev_button
+        else:
+            self.active_preview_prev_button = None
+
+        content_row.addWidget(preview_view, 1)
+
+        if source in ("builder_pool", "deck_entries"):
+            next_button = QPushButton(">")
+            next_button.setFixedWidth(42)
+            next_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            next_button.setFocusPolicy(Qt.NoFocus)
+            next_button.setStyleSheet("font-size: 22px; font-weight: bold;")
+            if source == "builder_pool":
+                next_button.clicked.connect(lambda: self.navigate_builder_pool_preview(1))
+            else:
+                next_button.clicked.connect(lambda: self.navigate_deck_entry_preview(1))
+            content_row.addWidget(next_button)
+            self.active_preview_next_button = next_button
+        else:
+            self.active_preview_next_button = None
+
+        layout.addLayout(content_row)
         self.active_preview_dialog = dialog
+        self.active_preview_view = preview_view
+        self.active_preview_source = source
+        self.active_preview_card_id = card.id
+        self.update_active_preview_navigation_buttons()
         dialog.finished.connect(self.on_preview_dialog_closed)
         dialog.show()
         dialog.move(
@@ -3617,6 +3782,11 @@ class MainWindow(QMainWindow):
 
     def on_preview_dialog_closed(self, _result: int) -> None:
         self.active_preview_dialog = None
+        self.active_preview_view = None
+        self.active_preview_prev_button = None
+        self.active_preview_next_button = None
+        self.active_preview_source = ""
+        self.active_preview_card_id = ""
 
     def show_card_preview_from_path(self, image_path: str, label: QLabel, zoom: float = 1.0) -> None:
         if not image_path or not Path(image_path).exists():
