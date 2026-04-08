@@ -1040,6 +1040,10 @@ class MainWindow(QMainWindow):
         metrics = QFontMetrics(self.font())
         return (metrics.lineSpacing() * lines) + 16
 
+    def meta_box_min_height(self, lines: int = 2) -> int:
+        metrics = QFontMetrics(self.font())
+        return (metrics.lineSpacing() * lines) + 8
+
     def show_message_box(
         self,
         icon,
@@ -1606,8 +1610,14 @@ class MainWindow(QMainWindow):
         self.builder_pool_value.setStyleSheet("font-size: 15px; font-weight: 600;")
         self.builder_pool_faction = QLabel("-")
         self.builder_pool_faction.setStyleSheet("font-size: 14px; font-weight: 600;")
-        self.builder_pool_meta = QLabel("-")
-        self.builder_pool_meta.setWordWrap(True)
+        self.builder_pool_meta = QTextEdit()
+        self.builder_pool_meta.setReadOnly(True)
+        self.builder_pool_meta.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.builder_pool_meta.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.builder_pool_meta.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.builder_pool_meta.setMinimumHeight(self.meta_box_min_height())
+        self.builder_pool_meta.setMaximumHeight(self.effect_box_height_for_lines(3))
+        self.builder_pool_meta.setPlainText("-")
         self.builder_pool_effect = QTextEdit()
         self.builder_pool_effect.setReadOnly(True)
         self.builder_pool_effect.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -1676,8 +1686,14 @@ class MainWindow(QMainWindow):
         self.deck_entry_effect.setLineWrapMode(QTextEdit.WidgetWidth)
         self.deck_entry_effect.setMinimumHeight(self.effect_box_height_for_lines(6))
         self.deck_entry_effect.setPlainText("-")
-        self.deck_entry_meta = QLabel("-")
-        self.deck_entry_meta.setWordWrap(True)
+        self.deck_entry_meta = QTextEdit()
+        self.deck_entry_meta.setReadOnly(True)
+        self.deck_entry_meta.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.deck_entry_meta.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.deck_entry_meta.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.deck_entry_meta.setMinimumHeight(self.meta_box_min_height())
+        self.deck_entry_meta.setMaximumHeight(self.effect_box_height_for_lines(3))
+        self.deck_entry_meta.setPlainText("-")
         self.deck_entry_quantity = QSpinBox()
         self.deck_entry_quantity.setMinimum(0)
         self.deck_entry_quantity.setMaximum(99)
@@ -2711,7 +2727,7 @@ class MainWindow(QMainWindow):
             self.builder_pool_name.setText("-")
             self.builder_pool_value.setText("-")
             self.builder_pool_faction.setText("-")
-            self.builder_pool_meta.setText("-")
+            self.builder_pool_meta.setPlainText("-")
             self.builder_pool_effect.setHtml(self.format_effect_html("-"))
         pool_scrollbar.setValue(min(previous_scroll_value, pool_scrollbar.maximum()))
 
@@ -2760,7 +2776,7 @@ class MainWindow(QMainWindow):
             self.deck_entry_value.setText("-")
             self.deck_entry_faction.setText("-")
             self.deck_entry_effect.setHtml(self.format_effect_html("-"))
-            self.deck_entry_meta.setText("-")
+            self.deck_entry_meta.setPlainText("-")
             self.deck_entry_quantity.blockSignals(True)
             self.deck_entry_quantity.setValue(0)
             self.deck_entry_quantity.blockSignals(False)
@@ -2871,7 +2887,7 @@ class MainWindow(QMainWindow):
             self.builder_pool_name.setText("-")
             self.builder_pool_value.setText("-")
             self.builder_pool_faction.setText("-")
-            self.builder_pool_meta.setText("-")
+            self.builder_pool_meta.setPlainText("-")
             self.builder_pool_effect.setPlainText("-")
             return
         card = self.library_by_id.get(current.data(Qt.UserRole))
@@ -2880,7 +2896,7 @@ class MainWindow(QMainWindow):
         self.builder_pool_name.setText(card.name)
         self.builder_pool_value.setText(card.value or "-")
         self.builder_pool_faction.setText(card.faction or "-")
-        self.builder_pool_meta.setText(self.format_card_meta(asdict(card)))
+        self.builder_pool_meta.setPlainText(self.format_card_meta(asdict(card)))
         self.builder_pool_effect.setHtml(self.format_effect_html(card.effect))
 
     def update_deck_entry_detail(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
@@ -2890,7 +2906,7 @@ class MainWindow(QMainWindow):
             self.deck_entry_value.setText("-")
             self.deck_entry_faction.setText("-")
             self.deck_entry_effect.setPlainText("-")
-            self.deck_entry_meta.setText("-")
+            self.deck_entry_meta.setPlainText("-")
             self.deck_entry_quantity.blockSignals(True)
             self.deck_entry_quantity.setValue(0)
             self.deck_entry_quantity.blockSignals(False)
@@ -2901,7 +2917,7 @@ class MainWindow(QMainWindow):
         self.deck_entry_value.setText(card.get("value", "-") or "-")
         self.deck_entry_faction.setText(card.get("faction", "-") or "-")
         self.deck_entry_effect.setHtml(self.format_effect_html(card["effect"]))
-        self.deck_entry_meta.setText(self.format_card_meta(card))
+        self.deck_entry_meta.setPlainText(self.format_card_meta(card))
         self.deck_entry_quantity.blockSignals(True)
         self.deck_entry_quantity.setValue(self.builder_entries.get(card_id, 0))
         self.deck_entry_quantity.blockSignals(False)
