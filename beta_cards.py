@@ -2363,8 +2363,14 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         left_panel = QGroupBox("Deck")
         left_layout = QVBoxLayout(left_panel)
+        play_counts_row = QHBoxLayout()
         self.remaining_label = QLabel("Remaining: 0")
-        left_layout.addWidget(self.remaining_label)
+        self.play_drawn_label = QLabel("Drawn: 0")
+        self.play_drawn_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        play_counts_row.addWidget(self.remaining_label)
+        play_counts_row.addStretch(1)
+        play_counts_row.addWidget(self.play_drawn_label)
+        left_layout.addLayout(play_counts_row)
         self.play_deck_list = DeckListWidget()
         self.play_deck_list.cardRightClicked.connect(self.show_play_list_card_preview)
         left_layout.addWidget(self.play_deck_list, 1)
@@ -4027,6 +4033,7 @@ class MainWindow(QMainWindow):
 
     def render_play_state(self) -> None:
         self.remaining_label.setText(f"Remaining: {len(self.play_draw_pile)}")
+        self.play_drawn_label.setText(f"Drawn: {len(self.play_draw_log)}")
         self.play_deck_list.clear()
         self.discard_list.clear()
         self.draw_log_list.clear()
