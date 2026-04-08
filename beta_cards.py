@@ -68,6 +68,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTextBrowser,
     QTextEdit,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -1080,6 +1081,7 @@ class Storage:
             "window_position": [0, 0],
             "window_maximized": False,
             "restore_window_state": True,
+            "play_show_hidden_card_details": True,
             "play_timer_game_start_enabled": True,
             "play_timer_game_start_seconds": 120,
             "play_timer_draw_enabled": True,
@@ -1142,6 +1144,7 @@ class MainWindow(QMainWindow):
         self.play_current_card_id: Optional[str] = None
         self.play_game_active = False
         self.play_draw_log: List[str] = []
+        self.play_card_hidden = False
         self.timer_mode = "countdown"
         self.timer_started_at: Optional[float] = None
         self.timer_elapsed: float = 0.0
@@ -1553,6 +1556,9 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return 300
 
+    def play_show_hidden_card_details_enabled(self) -> bool:
+        return bool(self.config.get("play_show_hidden_card_details", True))
+
     def known_factions(self) -> List[str]:
         return sorted({card.faction.strip() for card in self.library if card.faction.strip()}, key=str.lower)
 
@@ -1867,6 +1873,19 @@ class MainWindow(QMainWindow):
         play_timer_hint.setWordWrap(True)
         play_timer_form.addRow(play_timer_hint)
         layout.addWidget(play_timer_group)
+
+        play_view_group = QGroupBox("Play Card View")
+        play_view_form = QFormLayout(play_view_group)
+        self.play_show_hidden_card_details_checkbox = QCheckBox("Show card details when the play card is hidden")
+        self.play_show_hidden_card_details_checkbox.setChecked(self.play_show_hidden_card_details_enabled())
+        self.play_show_hidden_card_details_checkbox.toggled.connect(self.on_play_show_hidden_card_details_toggled)
+        play_view_form.addRow(self.play_show_hidden_card_details_checkbox)
+        play_view_hint = QLabel(
+            "When enabled, hiding the current play card swaps the image for readable card details instead of a blank hidden state."
+        )
+        play_view_hint.setWordWrap(True)
+        play_view_form.addRow(play_view_hint)
+        layout.addWidget(play_view_group)
 
         deck_builder_group = QGroupBox("Deck Builder")
         deck_builder_form = QFormLayout(deck_builder_group)
@@ -2200,7 +2219,7 @@ class MainWindow(QMainWindow):
         self.builder_pool_list.cardRightClicked.connect(self.show_builder_pool_context_menu)
 
         pool_instructions = QLabel(
-            "Left-click once to select a card, double-click to add one copy, double-click in the deck to remove one copy, and right-click to open a larger preview."
+            "Select cards with left-click (multi-select supported), double-click to add one copy of selected cards or remove if used in the deck, delete removes all copies of selected cards from the deck, and right-click to open a larger card preview."
         )
         pool_instructions.setWordWrap(True)
         pool_layout.addWidget(pool_instructions)
@@ -2370,12 +2389,26 @@ class MainWindow(QMainWindow):
         self.play_image_view.manual_zoom_enabled = False
         self.play_image_view.manual_pan_enabled = False
         self.play_image_view.cardPreviewRequested.connect(self.show_current_play_card_preview)
+        self.play_card_view_stack = QStackedWidget()
+        self.play_card_view_stack.addWidget(self.play_image_view)
+        self.play_card_details_panel = self.create_play_card_details_panel()
+        self.play_card_view_stack.addWidget(self.play_card_details_panel)
         center_layout = QVBoxLayout()
-        center_layout.addWidget(self.play_image_view, 1)
-        self.play_image_hint_label = QLabel("Right-click the card image to open the larger zoomable preview.")
+        center_layout.addWidget(self.play_card_view_stack, 1)
+        play_image_footer = QHBoxLayout()
+        self.play_hide_card_button = QPushButton("Hide Card")
+        self.play_hide_card_button.clicked.connect(self.toggle_play_card_hidden)
+        self.play_image_hint_label = QLabel(
+            "Use Hide Card to conceal the image during play. Right-click the card image to open the larger zoomable preview."
+        )
         self.play_image_hint_label.setAlignment(Qt.AlignCenter)
-        self.play_image_hint_label.setWordWrap(True)
-        center_layout.addWidget(self.play_image_hint_label)
+        self.play_image_hint_label.setWordWrap(False)
+        self.play_image_hint_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        play_image_footer.addWidget(self.play_hide_card_button, 0, Qt.AlignLeft | Qt.AlignBottom)
+        play_image_footer.addStretch(1)
+        play_image_footer.addWidget(self.play_image_hint_label, 1, Qt.AlignBottom)
+        play_image_footer.addStretch(1)
+        center_layout.addLayout(play_image_footer)
         grid.addLayout(center_layout, 0, 1)
 
         right = QVBoxLayout()
@@ -2833,6 +2866,11 @@ class MainWindow(QMainWindow):
         self.save_app_config()
         self.render_builder()
         self.refresh_deck_selects()
+
+    def on_play_show_hidden_card_details_toggled(self, checked: bool) -> None:
+        self.config["play_show_hidden_card_details"] = bool(checked)
+        self.save_app_config()
+        self.refresh_play_image()
 
     def on_default_card_author_changed(self, text: str) -> None:
         cleaned = text.strip()
@@ -4023,6 +4061,53 @@ class MainWindow(QMainWindow):
         self.update_primary_play_action_button()
         self.refresh_play_image()
 
+    def create_play_card_details_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QFormLayout(panel)
+        self.play_hidden_message = QLabel("Card image hidden.")
+        self.play_hidden_message.setAlignment(Qt.AlignCenter)
+        self.play_hidden_message.setWordWrap(True)
+        self.play_hidden_name = QLabel("-")
+        self.play_hidden_name.setWordWrap(True)
+        self.play_hidden_value = QLabel("-")
+        self.play_hidden_faction = QLabel("-")
+        self.play_hidden_meta = QTextEdit()
+        self.play_hidden_meta.setReadOnly(True)
+        self.play_hidden_meta.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.play_hidden_meta.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.play_hidden_meta.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.play_hidden_meta.setMinimumHeight(self.meta_box_min_height(3))
+        self.play_hidden_meta.setMaximumHeight(self.effect_box_height_for_lines(4))
+        self.play_hidden_meta.setPlainText("-")
+        self.play_hidden_effect = QTextEdit()
+        self.play_hidden_effect.setReadOnly(True)
+        self.play_hidden_effect.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.play_hidden_effect.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.play_hidden_effect.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.play_hidden_effect.setMinimumHeight(self.effect_box_height_for_lines(8))
+        self.play_hidden_effect.setPlainText("-")
+        layout.addRow(self.play_hidden_message)
+        layout.addRow("Name", self.play_hidden_name)
+        layout.addRow("Value", self.play_hidden_value)
+        layout.addRow("Faction", self.play_hidden_faction)
+        layout.addRow("Meta", self.play_hidden_meta)
+        layout.addRow("Effect", self.play_hidden_effect)
+        return panel
+
+    def set_play_hidden_card_details(self, card: Optional[dict]) -> None:
+        if not card:
+            self.play_hidden_name.setText("-")
+            self.play_hidden_value.setText("-")
+            self.play_hidden_faction.setText("-")
+            self.play_hidden_meta.setPlainText("-")
+            self.play_hidden_effect.setPlainText("-")
+            return
+        self.play_hidden_name.setText(card.get("name", "-") or "-")
+        self.play_hidden_value.setText(card.get("value", "-") or "-")
+        self.play_hidden_faction.setText(card.get("faction", "-") or "-")
+        self.play_hidden_meta.setPlainText(self.format_card_meta(card))
+        self.play_hidden_effect.setHtml(self.format_effect_html(card.get("effect", "")))
+
     def show_play_list_card_preview(self, item: QListWidgetItem) -> None:
         if not item:
             return
@@ -4070,11 +4155,32 @@ class MainWindow(QMainWindow):
 
     def refresh_play_image(self) -> None:
         if not self.play_current_card_id:
+            self.play_card_view_stack.setCurrentWidget(self.play_image_view)
             self.play_image_view.show_placeholder("Warmup Phase" if self.play_game_active else "No Active Game")
+            self.set_play_hidden_card_details(None)
+            self.play_hide_card_button.setEnabled(False)
+            self.play_hide_card_button.setText("Hide Card")
             return
         play_deck = self.get_selected_play_deck()
         card = self.get_card_for_deck_entry(self.play_current_card_id, play_deck)
+        self.set_play_hidden_card_details(card)
+        self.play_hide_card_button.setEnabled(True)
+        self.play_hide_card_button.setText("Show Card" if self.play_card_hidden else "Hide Card")
+        if self.play_card_hidden:
+            if self.play_show_hidden_card_details_enabled():
+                self.play_card_view_stack.setCurrentWidget(self.play_card_details_panel)
+            else:
+                self.play_card_view_stack.setCurrentWidget(self.play_image_view)
+                self.play_image_view.show_placeholder("Card Hidden")
+            return
+        self.play_card_view_stack.setCurrentWidget(self.play_image_view)
         self.play_image_view.set_image_path(card.get("image_path", ""))
+
+    def toggle_play_card_hidden(self) -> None:
+        if not self.play_current_card_id:
+            return
+        self.play_card_hidden = not self.play_card_hidden
+        self.refresh_play_image()
 
     def get_card_icon_cache_signature(self, image_path: str) -> Optional[tuple[int, int]]:
         if not image_path:
