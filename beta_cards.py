@@ -97,6 +97,7 @@ class CardGridListWidget(QListWidget):
         super().__init__(*args, **kwargs)
         self._ctrl_shift_base_rows = None
         self._ctrl_shift_pivot_row = None
+        self._shift_anchor_row = None
         self._pending_drag_focus_row = None
         self._pending_drag_start_pos = None
         self._pending_drag_started_on_item = False
@@ -113,6 +114,9 @@ class CardGridListWidget(QListWidget):
     def reset_ctrl_shift_selection_state(self) -> None:
         self._ctrl_shift_base_rows = None
         self._ctrl_shift_pivot_row = None
+
+    def reset_shift_selection_state(self) -> None:
+        self._shift_anchor_row = None
 
     def clear_current_focus(self) -> None:
         selection_model = self.selectionModel()
@@ -188,6 +192,41 @@ class CardGridListWidget(QListWidget):
             self.setCurrentItem(current_item, QItemSelectionModel.NoUpdate)
             current_item.setSelected(True)
 
+    def handle_shift_arrow(self, event: QKeyEvent) -> bool:
+        if event.key() not in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            return False
+        if self.count() <= 0:
+            event.accept()
+            return True
+
+        current_row = self.currentRow()
+        if current_row < 0:
+            current_row = 0
+            self.setCurrentRow(current_row)
+
+        anchor_row = self._shift_anchor_row
+        if anchor_row is None:
+            anchor_row = current_row
+            self._shift_anchor_row = anchor_row
+
+        translated_event = QKeyEvent(
+            event.type(),
+            event.key(),
+            Qt.NoModifier,
+            event.text(),
+            event.isAutoRepeat(),
+            event.count(),
+        )
+        super().keyPressEvent(translated_event)
+        new_row = self.currentRow()
+        if new_row < 0:
+            new_row = current_row
+
+        range_rows = set(range(min(anchor_row, new_row), max(anchor_row, new_row) + 1))
+        self.apply_row_selection(range_rows, new_row)
+        event.accept()
+        return True
+
     def handle_ctrl_shift_arrow(self, event: QKeyEvent) -> bool:
         if event.key() not in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
             return False
@@ -230,6 +269,7 @@ class CardGridListWidget(QListWidget):
 
     def mousePressEvent(self, event) -> None:
         self.reset_ctrl_shift_selection_state()
+        self.reset_shift_selection_state()
         self.stop_rubberband_auto_scroll()
         self._rubberband_drag_active = False
         self._pending_drag_focus_row = None
@@ -376,15 +416,29 @@ class CardGridListWidget(QListWidget):
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.SelectAll):
             self.reset_ctrl_shift_selection_state()
+            self.reset_shift_selection_state()
             self.selectAll()
             event.accept()
             return
+        if event.modifiers() == Qt.ShiftModifier:
+            self.reset_ctrl_shift_selection_state()
+            if self.handle_shift_arrow(event):
+                self.ensure_item_fully_visible(self.currentItem())
+                return
         if event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+            self.reset_shift_selection_state()
             if self.handle_ctrl_shift_arrow(event):
+                self.ensure_item_fully_visible(self.currentItem())
                 return
         else:
             self.reset_ctrl_shift_selection_state()
+            if event.modifiers() != Qt.ShiftModifier:
+                self.reset_shift_selection_state()
         super().keyPressEvent(event)
+        if event.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            if event.modifiers() == Qt.NoModifier and self.currentRow() >= 0:
+                self._shift_anchor_row = self.currentRow()
+            self.ensure_item_fully_visible(self.currentItem())
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -438,6 +492,7 @@ class DeckListWidget(QListWidget):
         super().__init__(*args, **kwargs)
         self._ctrl_shift_base_rows = None
         self._ctrl_shift_pivot_row = None
+        self._shift_anchor_row = None
         self._pending_drag_focus_row = None
         self._pending_drag_start_pos = None
         self._pending_drag_started_on_item = False
@@ -449,11 +504,29 @@ class DeckListWidget(QListWidget):
         self._ctrl_shift_base_rows = None
         self._ctrl_shift_pivot_row = None
 
+    def reset_shift_selection_state(self) -> None:
+        self._shift_anchor_row = None
+
     def clear_current_focus(self) -> None:
         selection_model = self.selectionModel()
         if selection_model is not None:
             selection_model.setCurrentIndex(QModelIndex(), QItemSelectionModel.NoUpdate)
         self.viewport().update()
+
+    def ensure_item_fully_visible(self, item: Optional[QListWidgetItem]) -> None:
+        if item is None:
+            return
+        item_rect = self.visualItemRect(item)
+        viewport_rect = self.viewport().rect()
+        if not item_rect.isValid() or item_rect.isEmpty():
+            return
+        if (
+            item_rect.top() < viewport_rect.top()
+            or item_rect.bottom() > viewport_rect.bottom()
+            or item_rect.left() < viewport_rect.left()
+            or item_rect.right() > viewport_rect.right()
+        ):
+            self.scrollToItem(item, QAbstractItemView.EnsureVisible)
 
     def apply_row_selection(self, selected_rows: set[int], current_row: int) -> None:
         self.clearSelection()
@@ -465,6 +538,41 @@ class DeckListWidget(QListWidget):
         if current_item is not None:
             self.setCurrentItem(current_item, QItemSelectionModel.NoUpdate)
             current_item.setSelected(True)
+
+    def handle_shift_arrow(self, event: QKeyEvent) -> bool:
+        if event.key() not in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            return False
+        if self.count() <= 0:
+            event.accept()
+            return True
+
+        current_row = self.currentRow()
+        if current_row < 0:
+            current_row = 0
+            self.setCurrentRow(current_row)
+
+        anchor_row = self._shift_anchor_row
+        if anchor_row is None:
+            anchor_row = current_row
+            self._shift_anchor_row = anchor_row
+
+        translated_event = QKeyEvent(
+            event.type(),
+            event.key(),
+            Qt.NoModifier,
+            event.text(),
+            event.isAutoRepeat(),
+            event.count(),
+        )
+        super().keyPressEvent(translated_event)
+        new_row = self.currentRow()
+        if new_row < 0:
+            new_row = current_row
+
+        range_rows = set(range(min(anchor_row, new_row), max(anchor_row, new_row) + 1))
+        self.apply_row_selection(range_rows, new_row)
+        event.accept()
+        return True
 
     def handle_ctrl_shift_arrow(self, event: QKeyEvent) -> bool:
         if event.key() not in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
@@ -516,6 +624,7 @@ class DeckListWidget(QListWidget):
 
     def mousePressEvent(self, event) -> None:
         self.reset_ctrl_shift_selection_state()
+        self.reset_shift_selection_state()
         self._rubberband_drag_active = False
         self._pending_drag_focus_row = None
         self._pending_drag_start_pos = None
@@ -608,20 +717,35 @@ class DeckListWidget(QListWidget):
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.SelectAll):
             self.reset_ctrl_shift_selection_state()
+            self.reset_shift_selection_state()
             self.selectAll()
             event.accept()
             return
         if event.key() == Qt.Key_Delete:
             self.reset_ctrl_shift_selection_state()
+            self.reset_shift_selection_state()
             self.deletePressed.emit()
             event.accept()
             return
+        if event.modifiers() == Qt.ShiftModifier:
+            self.reset_ctrl_shift_selection_state()
+            if self.handle_shift_arrow(event):
+                self.ensure_item_fully_visible(self.currentItem())
+                return
         if event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+            self.reset_shift_selection_state()
             if self.handle_ctrl_shift_arrow(event):
+                self.ensure_item_fully_visible(self.currentItem())
                 return
         else:
             self.reset_ctrl_shift_selection_state()
+            if event.modifiers() != Qt.ShiftModifier:
+                self.reset_shift_selection_state()
         super().keyPressEvent(event)
+        if event.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            if event.modifiers() == Qt.NoModifier and self.currentRow() >= 0:
+                self._shift_anchor_row = self.currentRow()
+            self.ensure_item_fully_visible(self.currentItem())
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
