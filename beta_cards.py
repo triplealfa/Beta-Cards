@@ -562,7 +562,7 @@ class MainWindow(QMainWindow):
         self.card_maker_image_path: Optional[Path] = None
         self.library: List[Card] = []
         self.library_by_id: Dict[str, Card] = {}
-        self.card_icon_cache: Dict[str, QIcon] = {}
+        self.card_icon_cache: Dict[str, tuple[QIcon, Optional[tuple[int, int]]]] = {}
         self.decks: List[Deck] = self.storage.load_decks()
         self.active_preview_dialog: Optional[QDialog] = None
         self.consume_preview_close_release = False
@@ -3405,9 +3405,22 @@ class MainWindow(QMainWindow):
         card = self.get_card_for_deck_entry(self.play_current_card_id, play_deck)
         self.play_image_view.set_image_path(card.get("image_path", ""))
 
+    def get_card_icon_cache_signature(self, image_path: str) -> Optional[tuple[int, int]]:
+        if not image_path:
+            return None
+        try:
+            stat = Path(image_path).stat()
+        except OSError:
+            return None
+        return (int(stat.st_mtime_ns), int(stat.st_size))
+
     def get_card_icon(self, image_path: str) -> QIcon:
-        if image_path in self.card_icon_cache:
-            return self.card_icon_cache[image_path]
+        current_signature = self.get_card_icon_cache_signature(image_path)
+        cached = self.card_icon_cache.get(image_path)
+        if cached is not None:
+            cached_icon, cached_signature = cached
+            if cached_signature == current_signature:
+                return cached_icon
 
         if image_path and Path(image_path).exists():
             pixmap = QPixmap(image_path)
@@ -3420,13 +3433,13 @@ class MainWindow(QMainWindow):
                         Qt.SmoothTransformation,
                     )
                 )
-                self.card_icon_cache[image_path] = icon
+                self.card_icon_cache[image_path] = (icon, current_signature)
                 return icon
 
         fallback = QPixmap(286, 400)
         fallback.fill(Qt.darkGray)
         icon = QIcon(fallback)
-        self.card_icon_cache[image_path] = icon
+        self.card_icon_cache[image_path] = (icon, current_signature)
         return icon
 
     def changeEvent(self, event) -> None:
