@@ -33,7 +33,7 @@ except ImportError:
     winsound = None
 
 from odt_rules_parser import load_rules_as_html
-from PySide6.QtCore import QEvent, QIODevice, QRect, QSize, QTimer, Qt, QUrl, Signal, QItemSelectionModel
+from PySide6.QtCore import QEvent, QIODevice, QModelIndex, QRect, QSize, QTimer, Qt, QUrl, Signal, QItemSelectionModel
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices, QSoundEffect
 from PySide6.QtWidgets import (
@@ -93,9 +93,89 @@ class CardGridListWidget(QListWidget):
     cardActivated = Signal(QListWidgetItem)
     cardRightClicked = Signal(QListWidgetItem)
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._ctrl_shift_base_rows = None
+        self._ctrl_shift_pivot_row = None
+        self._pending_drag_focus_row = None
+        self._pending_drag_start_pos = None
+        self._pending_drag_started_on_item = False
+        self._pending_clear_current_on_release = False
+        self._pending_click_ensure_visible_row = None
+        self._rubberband_preserve_current_row = None
+        self._rubberband_drag_active = False
+        self._rubberband_auto_scroll_delta = 0
+        self._rubberband_auto_scroll_timer = QTimer(self)
+        self._rubberband_auto_scroll_timer.setInterval(20)
+        self._rubberband_auto_scroll_timer.timeout.connect(self.perform_rubberband_auto_scroll)
+        self.setAutoScroll(False)
+
     def reset_ctrl_shift_selection_state(self) -> None:
         self._ctrl_shift_base_rows = None
         self._ctrl_shift_pivot_row = None
+
+    def clear_current_focus(self) -> None:
+        selection_model = self.selectionModel()
+        if selection_model is not None:
+            selection_model.setCurrentIndex(QModelIndex(), QItemSelectionModel.NoUpdate)
+        self.viewport().update()
+
+    def ensure_item_fully_visible(self, item: Optional[QListWidgetItem]) -> None:
+        if item is None:
+            return
+        item_rect = self.visualItemRect(item)
+        viewport_rect = self.viewport().rect()
+        if not item_rect.isValid() or item_rect.isEmpty():
+            return
+        if (
+            item_rect.top() < viewport_rect.top()
+            or item_rect.bottom() > viewport_rect.bottom()
+            or item_rect.left() < viewport_rect.left()
+            or item_rect.right() > viewport_rect.right()
+        ):
+            self.scrollToItem(item, QAbstractItemView.EnsureVisible)
+
+    def update_rubberband_auto_scroll(self, position) -> None:
+        if not self._rubberband_drag_active:
+            self.stop_rubberband_auto_scroll()
+            return
+
+        viewport_height = max(1, self.viewport().height())
+        margin = min(72, max(36, viewport_height // 8))
+        y_pos = position.y()
+        scroll_delta = 0
+
+        if y_pos < margin:
+            proximity = (margin - y_pos) / margin
+            scroll_delta = -max(14, int(18 + proximity * 38))
+        elif y_pos > viewport_height - margin:
+            proximity = (y_pos - (viewport_height - margin)) / margin
+            scroll_delta = max(14, int(18 + proximity * 38))
+
+        self._rubberband_auto_scroll_delta = scroll_delta
+        if scroll_delta:
+            if not self._rubberband_auto_scroll_timer.isActive():
+                self._rubberband_auto_scroll_timer.start()
+        else:
+            self.stop_rubberband_auto_scroll()
+
+    def stop_rubberband_auto_scroll(self) -> None:
+        self._rubberband_auto_scroll_delta = 0
+        if self._rubberband_auto_scroll_timer.isActive():
+            self._rubberband_auto_scroll_timer.stop()
+
+    def perform_rubberband_auto_scroll(self) -> None:
+        if not self._rubberband_drag_active or not self._rubberband_auto_scroll_delta:
+            self.stop_rubberband_auto_scroll()
+            return
+
+        scroll_bar = self.verticalScrollBar()
+        previous_value = scroll_bar.value()
+        next_value = max(scroll_bar.minimum(), min(scroll_bar.maximum(), previous_value + self._rubberband_auto_scroll_delta))
+        if next_value == previous_value:
+            self.stop_rubberband_auto_scroll()
+            return
+        scroll_bar.setValue(next_value)
 
     def apply_row_selection(self, selected_rows: set[int], current_row: int) -> None:
         self.clearSelection()
@@ -150,9 +230,13 @@ class CardGridListWidget(QListWidget):
 
     def mousePressEvent(self, event) -> None:
         self.reset_ctrl_shift_selection_state()
+        self.stop_rubberband_auto_scroll()
+        self._rubberband_drag_active = False
         self._pending_drag_focus_row = None
         self._pending_drag_start_pos = None
         self._pending_drag_started_on_item = False
+        self._pending_clear_current_on_release = False
+        self._pending_click_ensure_visible_row = None
         item = self.itemAt(event.position().toPoint())
         modifiers = event.modifiers()
         has_selection_modifiers = bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
@@ -160,6 +244,9 @@ class CardGridListWidget(QListWidget):
             self._pending_drag_focus_row = self.row(item) if item is not None else self.currentRow()
             self._pending_drag_start_pos = event.position().toPoint()
             self._pending_drag_started_on_item = item is not None
+            self._pending_clear_current_on_release = item is None
+            if item is not None:
+                self._pending_click_ensure_visible_row = self.row(item)
         if not item:
             if event.button() == Qt.LeftButton:
                 super().mousePressEvent(event)
@@ -194,24 +281,44 @@ class CardGridListWidget(QListWidget):
 
     def mouseMoveEvent(self, event) -> None:
         start_pos = getattr(self, "_pending_drag_start_pos", None)
+        drag_started = False
         if (
             start_pos is not None
             and event.buttons() & Qt.LeftButton
             and (event.position().toPoint() - start_pos).manhattanLength() >= QApplication.startDragDistance()
         ):
+            drag_started = True
             if getattr(self, "_rubberband_preserve_current_row", None) is None:
                 self._rubberband_preserve_current_row = getattr(self, "_pending_drag_focus_row", self.currentRow())
-                self._suppress_current_highlight = False
-                self.viewport().update()
+            self._rubberband_drag_active = True
+            self._pending_clear_current_on_release = False
+            self._pending_click_ensure_visible_row = None
+            self.viewport().update()
+            self.update_rubberband_auto_scroll(event.position().toPoint())
+        else:
+            self.stop_rubberband_auto_scroll()
         super().mouseMoveEvent(event)
+        if drag_started and self._rubberband_drag_active:
+            preserved_row = getattr(self, "_rubberband_preserve_current_row", None)
+            if preserved_row is None or preserved_row < 0 or preserved_row >= self.count():
+                current_row = self.currentRow()
+                if current_row >= 0:
+                    self._rubberband_preserve_current_row = current_row
+                    self.viewport().update()
 
     def mouseReleaseEvent(self, event) -> None:
+        pending_clear_current = self._pending_clear_current_on_release
+        pending_click_ensure_visible_row = self._pending_click_ensure_visible_row
+        was_rubberband_drag_active = self._rubberband_drag_active
+        self.stop_rubberband_auto_scroll()
+        self._rubberband_drag_active = False
         super().mouseReleaseEvent(event)
         self._pending_drag_focus_row = None
         self._pending_drag_start_pos = None
         self._pending_drag_started_on_item = False
+        self._pending_clear_current_on_release = False
+        self._pending_click_ensure_visible_row = None
         preserved_row = getattr(self, "_rubberband_preserve_current_row", None)
-        self._suppress_current_highlight = False
         if preserved_row is not None:
             self._rubberband_preserve_current_row = None
             if 0 <= preserved_row < self.count():
@@ -222,6 +329,11 @@ class CardGridListWidget(QListWidget):
                     self.setCurrentItem(current_item, QItemSelectionModel.NoUpdate)
                     self.verticalScrollBar().setValue(vertical_value)
                     self.horizontalScrollBar().setValue(horizontal_value)
+        elif event.button() == Qt.LeftButton and pending_clear_current:
+            self.clear_current_focus()
+        elif event.button() == Qt.LeftButton and not was_rubberband_drag_active:
+            target_item = self.item(pending_click_ensure_visible_row) if pending_click_ensure_visible_row is not None else None
+            self.ensure_item_fully_visible(target_item)
         self.viewport().update()
 
     def mouseDoubleClickEvent(self, event) -> None:
@@ -229,10 +341,16 @@ class CardGridListWidget(QListWidget):
         if item and event.button() == Qt.LeftButton:
             if item != self.currentItem():
                 self.setCurrentItem(item)
+            self.ensure_item_fully_visible(item)
             self.cardActivated.emit(item)
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
+
+    def scrollTo(self, index, hint=QAbstractItemView.EnsureVisible) -> None:
+        if self._rubberband_drag_active:
+            return
+        super().scrollTo(index, hint)
 
     def wheelEvent(self, event) -> None:
         """Handle mouse wheel scrolling to scroll by exactly one row at a time."""
@@ -316,9 +434,26 @@ class DeckListWidget(QListWidget):
     cardRightClicked = Signal(QListWidgetItem)
     deletePressed = Signal()
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._ctrl_shift_base_rows = None
+        self._ctrl_shift_pivot_row = None
+        self._pending_drag_focus_row = None
+        self._pending_drag_start_pos = None
+        self._pending_drag_started_on_item = False
+        self._pending_clear_current_on_release = False
+        self._rubberband_preserve_current_row = None
+        self._rubberband_drag_active = False
+
     def reset_ctrl_shift_selection_state(self) -> None:
         self._ctrl_shift_base_rows = None
         self._ctrl_shift_pivot_row = None
+
+    def clear_current_focus(self) -> None:
+        selection_model = self.selectionModel()
+        if selection_model is not None:
+            selection_model.setCurrentIndex(QModelIndex(), QItemSelectionModel.NoUpdate)
+        self.viewport().update()
 
     def apply_row_selection(self, selected_rows: set[int], current_row: int) -> None:
         self.clearSelection()
@@ -381,9 +516,11 @@ class DeckListWidget(QListWidget):
 
     def mousePressEvent(self, event) -> None:
         self.reset_ctrl_shift_selection_state()
+        self._rubberband_drag_active = False
         self._pending_drag_focus_row = None
         self._pending_drag_start_pos = None
         self._pending_drag_started_on_item = False
+        self._pending_clear_current_on_release = False
         item = self.itemAt(event.position().toPoint())
         modifiers = event.modifiers()
         has_selection_modifiers = bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
@@ -391,6 +528,7 @@ class DeckListWidget(QListWidget):
             self._pending_drag_focus_row = self.row(item) if item is not None else self.currentRow()
             self._pending_drag_start_pos = event.position().toPoint()
             self._pending_drag_started_on_item = item is not None
+            self._pending_clear_current_on_release = item is None
         if not item:
             # Deselect on empty space click
             if event.button() == Qt.LeftButton:
@@ -423,24 +561,36 @@ class DeckListWidget(QListWidget):
 
     def mouseMoveEvent(self, event) -> None:
         start_pos = getattr(self, "_pending_drag_start_pos", None)
+        drag_started = False
         if (
             start_pos is not None
             and event.buttons() & Qt.LeftButton
             and (event.position().toPoint() - start_pos).manhattanLength() >= QApplication.startDragDistance()
         ):
+            drag_started = True
             if getattr(self, "_rubberband_preserve_current_row", None) is None:
                 self._rubberband_preserve_current_row = getattr(self, "_pending_drag_focus_row", self.currentRow())
-                self._suppress_current_highlight = False
-                self.viewport().update()
+            self._rubberband_drag_active = True
+            self._pending_clear_current_on_release = False
+            self.viewport().update()
         super().mouseMoveEvent(event)
+        if drag_started and self._rubberband_drag_active:
+            preserved_row = getattr(self, "_rubberband_preserve_current_row", None)
+            if preserved_row is None or preserved_row < 0 or preserved_row >= self.count():
+                current_row = self.currentRow()
+                if current_row >= 0:
+                    self._rubberband_preserve_current_row = current_row
+                    self.viewport().update()
 
     def mouseReleaseEvent(self, event) -> None:
+        pending_clear_current = self._pending_clear_current_on_release
+        self._rubberband_drag_active = False
         super().mouseReleaseEvent(event)
         self._pending_drag_focus_row = None
         self._pending_drag_start_pos = None
         self._pending_drag_started_on_item = False
+        self._pending_clear_current_on_release = False
         preserved_row = getattr(self, "_rubberband_preserve_current_row", None)
-        self._suppress_current_highlight = False
         if preserved_row is not None:
             self._rubberband_preserve_current_row = None
             if 0 <= preserved_row < self.count():
@@ -451,6 +601,8 @@ class DeckListWidget(QListWidget):
                     self.setCurrentItem(current_item, QItemSelectionModel.NoUpdate)
                     self.verticalScrollBar().setValue(vertical_value)
                     self.horizontalScrollBar().setValue(horizontal_value)
+        elif event.button() == Qt.LeftButton and pending_clear_current:
+            self.clear_current_focus()
         self.viewport().update()
 
     def keyPressEvent(self, event) -> None:
