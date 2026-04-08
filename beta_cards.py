@@ -33,10 +33,11 @@ except ImportError:
     winsound = None
 
 from odt_rules_parser import load_rules_as_html
-from PySide6.QtCore import QEvent, QIODevice, QRect, QSize, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QPainter, QPixmap, QScreen
+from PySide6.QtCore import QEvent, QIODevice, QRect, QSize, QTimer, Qt, QUrl, Signal, QItemSelectionModel
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices, QSoundEffect
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -92,29 +93,136 @@ class CardGridListWidget(QListWidget):
     cardActivated = Signal(QListWidgetItem)
     cardRightClicked = Signal(QListWidgetItem)
 
+    def reset_ctrl_shift_selection_state(self) -> None:
+        self._ctrl_shift_base_rows = None
+        self._ctrl_shift_pivot_row = None
+
+    def apply_row_selection(self, selected_rows: set[int], current_row: int) -> None:
+        self.clearSelection()
+        for row in sorted(selected_rows):
+            item = self.item(row)
+            if item is not None:
+                item.setSelected(True)
+        current_item = self.item(current_row)
+        if current_item is not None:
+            self.setCurrentItem(current_item, QItemSelectionModel.NoUpdate)
+            current_item.setSelected(True)
+
+    def handle_ctrl_shift_arrow(self, event: QKeyEvent) -> bool:
+        if event.key() not in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            return False
+        if self.count() <= 0:
+            event.accept()
+            return True
+
+        current_row = self.currentRow()
+        if current_row < 0:
+            current_row = 0
+            self.setCurrentRow(current_row)
+
+        base_rows = getattr(self, "_ctrl_shift_base_rows", None)
+        pivot_row = getattr(self, "_ctrl_shift_pivot_row", None)
+        if base_rows is None or pivot_row is None:
+            base_rows = {self.row(item) for item in self.selectedItems()}
+            if not base_rows:
+                base_rows = {current_row}
+            pivot_row = current_row
+            self._ctrl_shift_base_rows = set(base_rows)
+            self._ctrl_shift_pivot_row = pivot_row
+
+        translated_event = QKeyEvent(
+            event.type(),
+            event.key(),
+            Qt.ControlModifier,
+            event.text(),
+            event.isAutoRepeat(),
+            event.count(),
+        )
+        super().keyPressEvent(translated_event)
+        new_row = self.currentRow()
+        if new_row < 0:
+            new_row = current_row
+
+        range_rows = set(range(min(pivot_row, new_row), max(pivot_row, new_row) + 1))
+        self.apply_row_selection(set(base_rows) | range_rows, new_row)
+        event.accept()
+        return True
+
     def mousePressEvent(self, event) -> None:
+        self.reset_ctrl_shift_selection_state()
+        self._pending_drag_focus_row = None
+        self._pending_drag_start_pos = None
+        self._pending_drag_started_on_item = False
         item = self.itemAt(event.position().toPoint())
+        modifiers = event.modifiers()
+        has_selection_modifiers = bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
+        if event.button() == Qt.LeftButton and not has_selection_modifiers:
+            self._pending_drag_focus_row = self.row(item) if item is not None else self.currentRow()
+            self._pending_drag_start_pos = event.position().toPoint()
+            self._pending_drag_started_on_item = item is not None
         if not item:
-            # Deselect on empty space click
             if event.button() == Qt.LeftButton:
-                self.setCurrentItem(None)
-                event.accept()
+                super().mousePressEvent(event)
                 return
             super().mousePressEvent(event)
             return
 
         if event.button() == Qt.RightButton:
-            self.setCurrentItem(item)
+            if item.isSelected():
+                self.setCurrentItem(item, QItemSelectionModel.NoUpdate)
+            else:
+                self.clearSelection()
+                item.setSelected(True)
+                self.setCurrentItem(item, QItemSelectionModel.NoUpdate)
             self.cardRightClicked.emit(item)
             event.accept()
             return
 
         if event.button() == Qt.LeftButton:
-            self.setCurrentItem(item)
+            if has_selection_modifiers:
+                super().mousePressEvent(event)
+                return
+            if item.isSelected() and len(self.selectedItems()) > 1:
+                self.setCurrentItem(item, QItemSelectionModel.NoUpdate)
+                event.accept()
+                return
+            super().mousePressEvent(event)
             event.accept()
             return
 
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        start_pos = getattr(self, "_pending_drag_start_pos", None)
+        if (
+            start_pos is not None
+            and event.buttons() & Qt.LeftButton
+            and (event.position().toPoint() - start_pos).manhattanLength() >= QApplication.startDragDistance()
+        ):
+            if getattr(self, "_rubberband_preserve_current_row", None) is None:
+                self._rubberband_preserve_current_row = getattr(self, "_pending_drag_focus_row", self.currentRow())
+                self._suppress_current_highlight = False
+                self.viewport().update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        self._pending_drag_focus_row = None
+        self._pending_drag_start_pos = None
+        self._pending_drag_started_on_item = False
+        preserved_row = getattr(self, "_rubberband_preserve_current_row", None)
+        self._suppress_current_highlight = False
+        if preserved_row is not None:
+            self._rubberband_preserve_current_row = None
+            if 0 <= preserved_row < self.count():
+                vertical_value = self.verticalScrollBar().value()
+                horizontal_value = self.horizontalScrollBar().value()
+                current_item = self.item(preserved_row)
+                if current_item is not None:
+                    self.setCurrentItem(current_item, QItemSelectionModel.NoUpdate)
+                    self.verticalScrollBar().setValue(vertical_value)
+                    self.horizontalScrollBar().setValue(horizontal_value)
+        self.viewport().update()
 
     def mouseDoubleClickEvent(self, event) -> None:
         item = self.itemAt(event.position().toPoint())
@@ -147,6 +255,38 @@ class CardGridListWidget(QListWidget):
         scroll_bar.setValue(scroll_bar.value() - scroll_amount)
         event.accept()
 
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.SelectAll):
+            self.reset_ctrl_shift_selection_state()
+            self.selectAll()
+            event.accept()
+            return
+        if event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+            if self.handle_ctrl_shift_arrow(event):
+                return
+        else:
+            self.reset_ctrl_shift_selection_state()
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        focus_row = getattr(self, "_rubberband_preserve_current_row", None)
+        if focus_row is not None and 0 <= focus_row < self.count():
+            focus_item = self.item(focus_row)
+        else:
+            focus_item = self.currentItem()
+        if focus_item is None:
+            return
+        rect = self.visualItemRect(focus_item)
+        if not rect.isValid() or rect.isEmpty():
+            return
+        painter = QPainter(self.viewport())
+        pen = QPen(QColor("#ffd24d"))
+        pen.setWidth(3)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect.adjusted(1, 1, -2, -2))
+
 
 class InfiniteSilenceIODevice(QIODevice):
     def __init__(self, parent=None) -> None:
@@ -174,6 +314,62 @@ class InfiniteSilenceIODevice(QIODevice):
 class DeckListWidget(QListWidget):
     cardDoubleClicked = Signal(QListWidgetItem)
     cardRightClicked = Signal(QListWidgetItem)
+    deletePressed = Signal()
+
+    def reset_ctrl_shift_selection_state(self) -> None:
+        self._ctrl_shift_base_rows = None
+        self._ctrl_shift_pivot_row = None
+
+    def apply_row_selection(self, selected_rows: set[int], current_row: int) -> None:
+        self.clearSelection()
+        for row in sorted(selected_rows):
+            item = self.item(row)
+            if item is not None:
+                item.setSelected(True)
+        current_item = self.item(current_row)
+        if current_item is not None:
+            self.setCurrentItem(current_item, QItemSelectionModel.NoUpdate)
+            current_item.setSelected(True)
+
+    def handle_ctrl_shift_arrow(self, event: QKeyEvent) -> bool:
+        if event.key() not in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            return False
+        if self.count() <= 0:
+            event.accept()
+            return True
+
+        current_row = self.currentRow()
+        if current_row < 0:
+            current_row = 0
+            self.setCurrentRow(current_row)
+
+        base_rows = getattr(self, "_ctrl_shift_base_rows", None)
+        pivot_row = getattr(self, "_ctrl_shift_pivot_row", None)
+        if base_rows is None or pivot_row is None:
+            base_rows = {self.row(item) for item in self.selectedItems()}
+            if not base_rows:
+                base_rows = {current_row}
+            pivot_row = current_row
+            self._ctrl_shift_base_rows = set(base_rows)
+            self._ctrl_shift_pivot_row = pivot_row
+
+        translated_event = QKeyEvent(
+            event.type(),
+            event.key(),
+            Qt.ControlModifier,
+            event.text(),
+            event.isAutoRepeat(),
+            event.count(),
+        )
+        super().keyPressEvent(translated_event)
+        new_row = self.currentRow()
+        if new_row < 0:
+            new_row = current_row
+
+        range_rows = set(range(min(pivot_row, new_row), max(pivot_row, new_row) + 1))
+        self.apply_row_selection(set(base_rows) | range_rows, new_row)
+        event.accept()
+        return True
 
     def mouseDoubleClickEvent(self, event) -> None:
         item = self.itemAt(event.position().toPoint())
@@ -184,23 +380,115 @@ class DeckListWidget(QListWidget):
         super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event) -> None:
+        self.reset_ctrl_shift_selection_state()
+        self._pending_drag_focus_row = None
+        self._pending_drag_start_pos = None
+        self._pending_drag_started_on_item = False
         item = self.itemAt(event.position().toPoint())
+        modifiers = event.modifiers()
+        has_selection_modifiers = bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
+        if event.button() == Qt.LeftButton and not has_selection_modifiers:
+            self._pending_drag_focus_row = self.row(item) if item is not None else self.currentRow()
+            self._pending_drag_start_pos = event.position().toPoint()
+            self._pending_drag_started_on_item = item is not None
         if not item:
             # Deselect on empty space click
             if event.button() == Qt.LeftButton:
-                self.setCurrentItem(None)
-                event.accept()
+                super().mousePressEvent(event)
                 return
             super().mousePressEvent(event)
             return
         
         if event.button() == Qt.RightButton:
-            self.setCurrentItem(item)
+            if item.isSelected():
+                self.setCurrentItem(item, QItemSelectionModel.NoUpdate)
+            else:
+                self.clearSelection()
+                item.setSelected(True)
+                self.setCurrentItem(item, QItemSelectionModel.NoUpdate)
             self.cardRightClicked.emit(item)
             event.accept()
             return
+
+        if event.button() == Qt.LeftButton:
+            if has_selection_modifiers:
+                super().mousePressEvent(event)
+                return
+            if item.isSelected() and len(self.selectedItems()) > 1:
+                self.setCurrentItem(item, QItemSelectionModel.NoUpdate)
+                event.accept()
+                return
         
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        start_pos = getattr(self, "_pending_drag_start_pos", None)
+        if (
+            start_pos is not None
+            and event.buttons() & Qt.LeftButton
+            and (event.position().toPoint() - start_pos).manhattanLength() >= QApplication.startDragDistance()
+        ):
+            if getattr(self, "_rubberband_preserve_current_row", None) is None:
+                self._rubberband_preserve_current_row = getattr(self, "_pending_drag_focus_row", self.currentRow())
+                self._suppress_current_highlight = False
+                self.viewport().update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        self._pending_drag_focus_row = None
+        self._pending_drag_start_pos = None
+        self._pending_drag_started_on_item = False
+        preserved_row = getattr(self, "_rubberband_preserve_current_row", None)
+        self._suppress_current_highlight = False
+        if preserved_row is not None:
+            self._rubberband_preserve_current_row = None
+            if 0 <= preserved_row < self.count():
+                vertical_value = self.verticalScrollBar().value()
+                horizontal_value = self.horizontalScrollBar().value()
+                current_item = self.item(preserved_row)
+                if current_item is not None:
+                    self.setCurrentItem(current_item, QItemSelectionModel.NoUpdate)
+                    self.verticalScrollBar().setValue(vertical_value)
+                    self.horizontalScrollBar().setValue(horizontal_value)
+        self.viewport().update()
+
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.SelectAll):
+            self.reset_ctrl_shift_selection_state()
+            self.selectAll()
+            event.accept()
+            return
+        if event.key() == Qt.Key_Delete:
+            self.reset_ctrl_shift_selection_state()
+            self.deletePressed.emit()
+            event.accept()
+            return
+        if event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+            if self.handle_ctrl_shift_arrow(event):
+                return
+        else:
+            self.reset_ctrl_shift_selection_state()
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        focus_row = getattr(self, "_rubberband_preserve_current_row", None)
+        if focus_row is not None and 0 <= focus_row < self.count():
+            focus_item = self.item(focus_row)
+        else:
+            focus_item = self.currentItem()
+        if focus_item is None:
+            return
+        rect = self.visualItemRect(focus_item)
+        if not rect.isValid() or rect.isEmpty():
+            return
+        painter = QPainter(self.viewport())
+        pen = QPen(QColor("#ffd24d"))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect.adjusted(1, 1, -2, -2))
 
 
 class ZoomableCardView(QGraphicsView):
@@ -1620,6 +1908,7 @@ class MainWindow(QMainWindow):
 
         self.builder_pool_list = CardGridListWidget()
         self.builder_pool_list.setViewMode(QListView.IconMode)
+        self.builder_pool_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.builder_pool_list.setIconSize(QSize(286, 400))
         self.builder_pool_list.setResizeMode(QListView.Adjust)
         self.builder_pool_list.setMovement(QListView.Static)
@@ -1688,9 +1977,11 @@ class MainWindow(QMainWindow):
         deck_layout.addLayout(deck_stats_row)
 
         self.deck_entries_list = DeckListWidget()
+        self.deck_entries_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.deck_entries_list.currentItemChanged.connect(self.update_deck_entry_detail)
         self.deck_entries_list.cardDoubleClicked.connect(self.remove_one_copy_from_deck_item)
         self.deck_entries_list.cardRightClicked.connect(self.show_deck_card_preview)
+        self.deck_entries_list.deletePressed.connect(self.remove_selected_deck_entries_completely)
 
         self.deck_stats_toggle = QPushButton("Show Deck Stats")
         self.deck_stats_toggle.setCheckable(True)
@@ -2592,8 +2883,15 @@ class MainWindow(QMainWindow):
     def add_pool_card_from_click(self, item: QListWidgetItem) -> None:
         if not item:
             return
-        card_id = item.data(Qt.UserRole)
-        self.builder_entries[card_id] = self.builder_entries.get(card_id, 0) + 1
+        selected_items = self.builder_pool_list.selectedItems()
+        target_items = selected_items if item.isSelected() and len(selected_items) > 1 else [item]
+        seen_card_ids = set()
+        for target_item in target_items:
+            card_id = target_item.data(Qt.UserRole)
+            if card_id in seen_card_ids:
+                continue
+            seen_card_ids.add(card_id)
+            self.builder_entries[card_id] = self.builder_entries.get(card_id, 0) + 1
         self.render_builder_deck_contents()
         self.refresh_builder_pool_counts_only()
 
@@ -2727,6 +3025,10 @@ class MainWindow(QMainWindow):
             filtered_pool.append(card)
         sort_mode = self.builder_pool_sort_combo.currentText()
         filtered_pool.sort(key=self.card_pool_sort_key, reverse=(sort_mode == "Sort: Name Z-A"))
+        selected_pool_card_ids = {
+            item.data(Qt.UserRole)
+            for item in self.builder_pool_list.selectedItems()
+        }
         selected_pool_card_id = (
             self.builder_pool_list.currentItem().data(Qt.UserRole)
             if self.builder_pool_list.currentItem()
@@ -2750,14 +3052,22 @@ class MainWindow(QMainWindow):
             )
             self.builder_pool_list.addItem(item)
         if self.builder_pool_list.count():
-            if selected_pool_card_id:
-                for index in range(self.builder_pool_list.count()):
-                    item = self.builder_pool_list.item(index)
-                    if item.data(Qt.UserRole) == selected_pool_card_id:
-                        self.builder_pool_list.setCurrentRow(index)
-                        break
-                else:
-                    self.builder_pool_list.setCurrentRow(0)
+            current_item_to_restore = None
+            fallback_selected_item = None
+            for index in range(self.builder_pool_list.count()):
+                pool_item = self.builder_pool_list.item(index)
+                card_id = pool_item.data(Qt.UserRole)
+                if card_id in selected_pool_card_ids:
+                    pool_item.setSelected(True)
+                    if fallback_selected_item is None:
+                        fallback_selected_item = pool_item
+                if card_id == selected_pool_card_id:
+                    current_item_to_restore = pool_item
+
+            if current_item_to_restore is not None:
+                self.builder_pool_list.setCurrentItem(current_item_to_restore, QItemSelectionModel.NoUpdate)
+            elif fallback_selected_item is not None:
+                self.builder_pool_list.setCurrentItem(fallback_selected_item, QItemSelectionModel.NoUpdate)
             else:
                 self.builder_pool_list.setCurrentRow(0)
         else:
@@ -2780,6 +3090,10 @@ class MainWindow(QMainWindow):
         self.deck_stats_tabs.setTabText(0, f"Faction ({len(faction_stats)})")
         self.deck_stats_tabs.setTabText(1, f"Value ({len(value_stats)})")
 
+        selected_card_ids = {
+            item.data(Qt.UserRole)
+            for item in self.deck_entries_list.selectedItems()
+        }
         selected_card_id = (
             self.deck_entries_list.currentItem().data(Qt.UserRole)
             if self.deck_entries_list.currentItem()
@@ -2797,17 +3111,25 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, card_id)
             self.deck_entries_list.addItem(item)
         if self.deck_entries_list.count():
-            if selected_card_id:
-                for index in range(self.deck_entries_list.count()):
-                    item = self.deck_entries_list.item(index)
-                    if item.data(Qt.UserRole) == selected_card_id:
-                        self.deck_entries_list.setCurrentRow(index)
-                        break
-                else:
-                    fallback_row = min(selected_row, self.deck_entries_list.count() - 1)
-                    self.deck_entries_list.setCurrentRow(max(fallback_row, 0))
+            current_item_to_restore = None
+            fallback_selected_item = None
+            for index in range(self.deck_entries_list.count()):
+                deck_item = self.deck_entries_list.item(index)
+                card_id = deck_item.data(Qt.UserRole)
+                if card_id in selected_card_ids:
+                    deck_item.setSelected(True)
+                    if fallback_selected_item is None:
+                        fallback_selected_item = deck_item
+                if card_id == selected_card_id:
+                    current_item_to_restore = deck_item
+
+            if current_item_to_restore is not None:
+                self.deck_entries_list.setCurrentItem(current_item_to_restore, QItemSelectionModel.NoUpdate)
+            elif fallback_selected_item is not None:
+                self.deck_entries_list.setCurrentItem(fallback_selected_item, QItemSelectionModel.NoUpdate)
             else:
-                self.deck_entries_list.setCurrentRow(0)
+                fallback_row = min(selected_row, self.deck_entries_list.count() - 1)
+                self.deck_entries_list.setCurrentRow(max(fallback_row, 0))
         else:
             self.deck_entry_name.setText("-")
             self.deck_entry_value.setText("-")
@@ -2962,12 +3284,32 @@ class MainWindow(QMainWindow):
     def remove_one_copy_from_deck_item(self, item: QListWidgetItem) -> None:
         if not item:
             return
-        card_id = item.data(Qt.UserRole)
-        current_quantity = self.builder_entries.get(card_id, 0)
-        if current_quantity <= 1:
+        selected_items = self.deck_entries_list.selectedItems()
+        target_items = selected_items if item.isSelected() and len(selected_items) > 1 else [item]
+        seen_card_ids = set()
+        for target_item in target_items:
+            card_id = target_item.data(Qt.UserRole)
+            if card_id in seen_card_ids:
+                continue
+            seen_card_ids.add(card_id)
+            current_quantity = self.builder_entries.get(card_id, 0)
+            if current_quantity <= 1:
+                self.builder_entries.pop(card_id, None)
+            else:
+                self.builder_entries[card_id] = current_quantity - 1
+        self.render_builder_deck_contents()
+        self.refresh_builder_pool_counts_only()
+
+    def remove_selected_deck_entries_completely(self) -> None:
+        selected_items = self.deck_entries_list.selectedItems()
+        if not selected_items:
+            return
+        selected_card_ids = {
+            item.data(Qt.UserRole)
+            for item in selected_items
+        }
+        for card_id in selected_card_ids:
             self.builder_entries.pop(card_id, None)
-        else:
-            self.builder_entries[card_id] = current_quantity - 1
         self.render_builder_deck_contents()
         self.refresh_builder_pool_counts_only()
 
