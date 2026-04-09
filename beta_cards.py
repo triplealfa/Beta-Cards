@@ -34,7 +34,7 @@ except ImportError:
 
 from odt_rules_parser import load_rules_as_html
 from PySide6.QtCore import QEvent, QIODevice, QModelIndex, QRect, QSize, QTimer, Qt, QUrl, Signal, QItemSelectionModel
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices, QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -69,6 +70,8 @@ from PySide6.QtWidgets import (
     QTextBrowser,
     QTextEdit,
     QStackedWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -755,6 +758,119 @@ class DeckListWidget(QListWidget):
             focus_item = self.item(focus_row)
         else:
             focus_item = self.currentItem()
+        if focus_item is None:
+            return
+        rect = self.visualItemRect(focus_item)
+        if not rect.isValid() or rect.isEmpty():
+            return
+        painter = QPainter(self.viewport())
+        pen = QPen(QColor("#ffd24d"))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect.adjusted(1, 1, -2, -2))
+
+
+class BuilderDeckTreeWidget(QTreeWidget):
+    cardDoubleClicked = Signal(QTreeWidgetItem)
+    cardRightClicked = Signal(QTreeWidgetItem)
+    deletePressed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setRootIsDecorated(False)
+        self.setItemsExpandable(False)
+        self.setUniformRowHeights(True)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.setAllColumnsShowFocus(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def clear_current_focus(self) -> None:
+        selection_model = self.selectionModel()
+        if selection_model is not None:
+            selection_model.setCurrentIndex(QModelIndex(), QItemSelectionModel.NoUpdate)
+        self.viewport().update()
+
+    def addItem(self, item: QTreeWidgetItem) -> None:
+        self.addTopLevelItem(item)
+
+    def count(self) -> int:
+        return self.topLevelItemCount()
+
+    def item(self, index: int) -> Optional[QTreeWidgetItem]:
+        return self.topLevelItem(index)
+
+    def currentRow(self) -> int:
+        current_item = self.currentItem()
+        return self.indexOfTopLevelItem(current_item) if current_item is not None else -1
+
+    def setCurrentRow(self, row: int) -> None:
+        item = self.topLevelItem(row)
+        if item is not None:
+            self.setCurrentItem(item)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        item = self.itemAt(event.position().toPoint())
+        if item and event.button() == Qt.LeftButton:
+            self.cardDoubleClicked.emit(item)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        item = self.itemAt(event.position().toPoint())
+        modifiers = event.modifiers()
+        has_selection_modifiers = bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
+
+        if item is None:
+            super().mousePressEvent(event)
+            if event.button() == Qt.LeftButton:
+                self.clear_current_focus()
+            return
+
+        if event.button() == Qt.RightButton:
+            if item.isSelected():
+                self.selectionModel().setCurrentIndex(
+                    self.indexFromItem(item, 0),
+                    QItemSelectionModel.NoUpdate,
+                )
+            else:
+                self.clearSelection()
+                item.setSelected(True)
+                self.selectionModel().setCurrentIndex(
+                    self.indexFromItem(item, 0),
+                    QItemSelectionModel.NoUpdate,
+                )
+            self.cardRightClicked.emit(item)
+            event.accept()
+            return
+
+        if event.button() == Qt.LeftButton and not has_selection_modifiers:
+            if item.isSelected() and len(self.selectedItems()) > 1:
+                self.selectionModel().setCurrentIndex(
+                    self.indexFromItem(item, 0),
+                    QItemSelectionModel.NoUpdate,
+                )
+                event.accept()
+                return
+
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.SelectAll):
+            self.selectAll()
+            event.accept()
+            return
+        if event.key() == Qt.Key_Delete:
+            self.deletePressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        focus_item = self.currentItem()
         if focus_item is None:
             return
         rect = self.visualItemRect(focus_item)
@@ -2271,12 +2387,25 @@ class MainWindow(QMainWindow):
         deck_stats_row.addWidget(self.deck_average_value_label)
         deck_layout.addLayout(deck_stats_row)
 
-        self.deck_entries_list = DeckListWidget()
-        self.deck_entries_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.deck_entries_list = BuilderDeckTreeWidget()
         self.deck_entries_list.currentItemChanged.connect(self.update_deck_entry_detail)
         self.deck_entries_list.cardDoubleClicked.connect(self.remove_one_copy_from_deck_item)
         self.deck_entries_list.cardRightClicked.connect(self.show_deck_card_preview)
         self.deck_entries_list.deletePressed.connect(self.remove_selected_deck_entries_completely)
+        self.deck_entries_list.setColumnCount(4)
+        self.deck_entries_list.setHeaderLabels(["Value", "Faction", "Name", "Qty"])
+        self.deck_entries_list.header().setSectionsClickable(True)
+        self.deck_entries_list.header().setStretchLastSection(False)
+        self.deck_entries_list.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.deck_entries_list.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.deck_entries_list.header().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.deck_entries_list.header().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.deck_entries_list.header().sectionClicked.connect(self.on_builder_deck_header_clicked)
+        self.deck_entries_list.setAlternatingRowColors(False)
+        self.update_builder_deck_sort_header_labels()
+        self.deck_entries_list.setColumnWidth(0, 56)
+        self.deck_entries_list.setColumnWidth(1, 150)
+        self.deck_entries_list.setColumnWidth(3, 52)
 
         self.deck_stats_toggle = QPushButton("Show Deck Stats")
         self.deck_stats_toggle.setCheckable(True)
@@ -2891,6 +3020,26 @@ class MainWindow(QMainWindow):
         self.save_app_config()
         self.render_builder()
 
+    def on_builder_deck_sort_changed(self, column: str) -> None:
+        current_column = self.builder_deck_sort_column()
+        descending = self.builder_deck_sort_descending()
+        if column == current_column:
+            descending = not descending
+        else:
+            descending = False
+        self.config["builder_deck_sort_column"] = column
+        self.config["builder_deck_sort_descending"] = bool(descending)
+        self.save_app_config()
+        self.update_builder_deck_sort_header_labels()
+        self.render_builder_deck_contents()
+
+    def on_builder_deck_header_clicked(self, section: int) -> None:
+        column_map = {0: "value", 1: "faction", 2: "name"}
+        column = column_map.get(section)
+        if column is None:
+            return
+        self.on_builder_deck_sort_changed(column)
+
     def on_audio_system_sounds_toggled(self, checked: bool) -> None:
         self.config["audio_system_sounds"] = bool(checked)
         self.save_app_config()
@@ -3411,31 +3560,51 @@ class MainWindow(QMainWindow):
         self.deck_stats_tabs.setTabText(1, f"Value ({len(value_stats)})")
 
         selected_card_ids = {
-            item.data(Qt.UserRole)
+            item.data(0, Qt.UserRole)
             for item in self.deck_entries_list.selectedItems()
         }
         selected_card_id = (
-            self.deck_entries_list.currentItem().data(Qt.UserRole)
+            self.deck_entries_list.currentItem().data(0, Qt.UserRole)
             if self.deck_entries_list.currentItem()
             else None
         )
         selected_row = self.deck_entries_list.currentRow()
         self.deck_entries_list.clear()
         active_deck = self.get_current_saved_deck()
-        for card_id, quantity in sorted(
-            self.builder_entries.items(),
-            key=lambda item: self.get_card_for_deck_entry(item[0], active_deck)["name"].lower(),
-        ):
+        sorted_entries = []
+        for card_id, quantity in self.builder_entries.items():
             card = self.get_card_for_deck_entry(card_id, active_deck)
-            item = QListWidgetItem(f"{card['name']}    x{quantity}")
-            item.setData(Qt.UserRole, card_id)
+            sorted_entries.append((card_id, quantity, card))
+        sorted_entries.sort(
+            key=lambda entry: self.builder_deck_sort_key(entry[2]),
+            reverse=self.builder_deck_sort_descending(),
+        )
+        self.update_builder_deck_sort_header_labels()
+        for card_id, quantity, card in sorted_entries:
+            item = QTreeWidgetItem(
+                [
+                    str(card.get("value", "") or "-").strip() or "-",
+                    str(card.get("faction", "") or "-").strip() or "-",
+                    str(card.get("name", "") or "-").strip() or "-",
+                    f"x{quantity}",
+                ]
+            )
+            item.setData(0, Qt.UserRole, card_id)
+            item.setTextAlignment(0, Qt.AlignRight | Qt.AlignVCenter)
+            item.setTextAlignment(3, Qt.AlignRight | Qt.AlignVCenter)
+            tooltip = (
+                f"{card.get('name', card_id)}\nValue: {card.get('value', '-') or '-'}\n"
+                f"Faction: {card.get('faction', '-') or '-'}\n{self.format_card_meta(card)}"
+            )
+            for column in range(4):
+                item.setToolTip(column, tooltip)
             self.deck_entries_list.addItem(item)
         if self.deck_entries_list.count():
             current_item_to_restore = None
             fallback_selected_item = None
             for index in range(self.deck_entries_list.count()):
                 deck_item = self.deck_entries_list.item(index)
-                card_id = deck_item.data(Qt.UserRole)
+                card_id = deck_item.data(0, Qt.UserRole)
                 if card_id in selected_card_ids:
                     deck_item.setSelected(True)
                     if fallback_selected_item is None:
@@ -3444,9 +3613,15 @@ class MainWindow(QMainWindow):
                     current_item_to_restore = deck_item
 
             if current_item_to_restore is not None:
-                self.deck_entries_list.setCurrentItem(current_item_to_restore, QItemSelectionModel.NoUpdate)
+                self.deck_entries_list.selectionModel().setCurrentIndex(
+                    self.deck_entries_list.indexFromItem(current_item_to_restore, 0),
+                    QItemSelectionModel.NoUpdate,
+                )
             elif fallback_selected_item is not None:
-                self.deck_entries_list.setCurrentItem(fallback_selected_item, QItemSelectionModel.NoUpdate)
+                self.deck_entries_list.selectionModel().setCurrentIndex(
+                    self.deck_entries_list.indexFromItem(fallback_selected_item, 0),
+                    QItemSelectionModel.NoUpdate,
+                )
             else:
                 fallback_row = min(selected_row, self.deck_entries_list.count() - 1)
                 self.deck_entries_list.setCurrentRow(max(fallback_row, 0))
@@ -3578,7 +3753,7 @@ class MainWindow(QMainWindow):
         self.builder_pool_meta.setPlainText(self.format_card_meta(asdict(card)))
         self.builder_pool_effect.setHtml(self.format_effect_html(card.effect))
 
-    def update_deck_entry_detail(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
+    def update_deck_entry_detail(self, current, _previous) -> None:
         if not current:
             # Clear details when deselected
             self.deck_entry_name.setText("-")
@@ -3590,7 +3765,7 @@ class MainWindow(QMainWindow):
             self.deck_entry_quantity.setValue(0)
             self.deck_entry_quantity.blockSignals(False)
             return
-        card_id = current.data(Qt.UserRole)
+        card_id = current.data(0, Qt.UserRole)
         card = self.get_card_for_deck_entry(card_id, self.get_current_saved_deck())
         self.deck_entry_name.setText(card["name"])
         self.deck_entry_value.setText(card.get("value", "-") or "-")
@@ -3601,14 +3776,14 @@ class MainWindow(QMainWindow):
         self.deck_entry_quantity.setValue(self.builder_entries.get(card_id, 0))
         self.deck_entry_quantity.blockSignals(False)
 
-    def remove_one_copy_from_deck_item(self, item: QListWidgetItem) -> None:
+    def remove_one_copy_from_deck_item(self, item) -> None:
         if not item:
             return
         selected_items = self.deck_entries_list.selectedItems()
         target_items = selected_items if item.isSelected() and len(selected_items) > 1 else [item]
         seen_card_ids = set()
         for target_item in target_items:
-            card_id = target_item.data(Qt.UserRole)
+            card_id = target_item.data(0, Qt.UserRole)
             if card_id in seen_card_ids:
                 continue
             seen_card_ids.add(card_id)
@@ -3625,7 +3800,7 @@ class MainWindow(QMainWindow):
         if not selected_items:
             return
         selected_card_ids = {
-            item.data(Qt.UserRole)
+            item.data(0, Qt.UserRole)
             for item in selected_items
         }
         for card_id in selected_card_ids:
@@ -3633,10 +3808,10 @@ class MainWindow(QMainWindow):
         self.render_builder_deck_contents()
         self.refresh_builder_pool_counts_only()
 
-    def show_deck_card_preview(self, item: QListWidgetItem) -> None:
+    def show_deck_card_preview(self, item) -> None:
         if not item:
             return
-        card_id = item.data(Qt.UserRole)
+        card_id = item.data(0, Qt.UserRole)
         card = self.library_by_id.get(card_id)
         if card is None:
             card_data = self.get_card_for_deck_entry(card_id, self.get_current_saved_deck())
@@ -3659,7 +3834,7 @@ class MainWindow(QMainWindow):
         current = self.deck_entries_list.currentItem()
         if not current:
             return
-        card_id = current.data(Qt.UserRole)
+        card_id = current.data(0, Qt.UserRole)
         if value <= 0:
             self.builder_entries.pop(card_id, None)
         else:
@@ -3904,6 +4079,71 @@ class MainWindow(QMainWindow):
 
     def format_builder_pool_item_text(self, name: str, quantity_in_deck: int) -> str:
         return f"In deck: {quantity_in_deck}"
+
+    def builder_deck_sort_column(self) -> str:
+        column = str(self.config.get("builder_deck_sort_column", "value")).strip().lower()
+        if column not in {"value", "faction", "name"}:
+            return "value"
+        return column
+
+    def builder_deck_sort_descending(self) -> bool:
+        return bool(self.config.get("builder_deck_sort_descending", False))
+
+    def builder_deck_sort_columns(self) -> list[str]:
+        primary = self.builder_deck_sort_column()
+        fallback_order = ["value", "faction", "name"]
+        return [primary] + [column for column in fallback_order if column != primary]
+
+    def builder_deck_value_sort_component(self, value: str) -> tuple[int, float, str]:
+        cleaned = str(value or "").strip()
+        try:
+            return (0, float(cleaned), cleaned.lower())
+        except ValueError:
+            fallback_text = cleaned.lower() or "~"
+            return (1, 0.0, fallback_text)
+
+    def builder_deck_sort_key(self, card: dict) -> tuple:
+        name_component = str(card.get("name", "") or "").lower()
+        faction_component = str(card.get("faction", "") or "").lower()
+        value_component = self.builder_deck_value_sort_component(card.get("value", ""))
+        components = {
+            "value": value_component,
+            "faction": (faction_component, value_component, name_component),
+            "name": (name_component, value_component, faction_component),
+        }
+        return tuple(components[column] for column in self.builder_deck_sort_columns())
+
+    def format_builder_deck_entry_text(self, card: dict, quantity: int) -> str:
+        def truncate_text(text: str, width: int) -> str:
+            if len(text) <= width:
+                return text
+            if width <= 3:
+                return text[:width]
+            return f"{text[:width - 3]}..."
+
+        value_text = str(card.get("value", "") or "-").strip() or "-"
+        faction_text = str(card.get("faction", "") or "-").strip() or "-"
+        name_text = str(card.get("name", "") or "-").strip() or "-"
+        quantity_text = f"x{quantity}"
+        faction_column = truncate_text(faction_text, 20)
+        name_column = truncate_text(name_text, 24)
+        return f"{value_text:>5}  {faction_column:<20}  {name_column:<24}  {quantity_text:>4}"
+
+    def update_builder_deck_sort_header_labels(self) -> None:
+        current_column = self.builder_deck_sort_column()
+        descending = self.builder_deck_sort_descending()
+        labels = []
+        for column, label in (
+            ("value", "Value"),
+            ("faction", "Faction"),
+            ("name", "Name"),
+        ):
+            suffix = ""
+            if column == current_column:
+                suffix = " v" if descending else " ^"
+            labels.append(f"{label}{suffix}")
+        labels.append("Qty")
+        self.deck_entries_list.setHeaderLabels(labels)
 
     def on_play_history_toggled(self, checked: bool) -> None:
         self.play_history_tabs.setVisible(checked)
@@ -4355,7 +4595,7 @@ class MainWindow(QMainWindow):
         if item is None:
             self.update_active_preview_navigation_buttons()
             return
-        card_id = item.data(Qt.UserRole)
+        card_id = item.data(0, Qt.UserRole)
         card = self.library_by_id.get(card_id)
         if card is None:
             card_data = self.get_card_for_deck_entry(card_id, self.get_current_saved_deck())
@@ -4421,7 +4661,7 @@ class MainWindow(QMainWindow):
         if item is None:
             self.update_active_preview_navigation_buttons()
             return
-        card = self.library_by_id.get(item.data(Qt.UserRole))
+        card = self.library_by_id.get(item.data(0, Qt.UserRole))
         if card is None:
             self.update_active_preview_navigation_buttons()
             return
