@@ -1858,6 +1858,11 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         self.tabs = tabs
+        
+        # Prevent tab bar from receiving keyboard focus to avoid arrow key interference with deck builder
+        tabs.setFocusPolicy(Qt.NoFocus)
+        tabs.tabBar().setFocusPolicy(Qt.NoFocus)
+        
         outer.addWidget(tabs, 1)
 
         self.builder_tab = QWidget()
@@ -1876,6 +1881,9 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.options_tab_scroll, "Options")
         tabs.addTab(self.rules_tab_scroll, "Rules")
         tabs.addTab(self.about_tab_scroll, "About")
+        
+        # Connect tab change signal to set appropriate focus for each tab
+        tabs.currentChanged.connect(self.on_tab_changed)
 
         self.build_builder_tab()
         self.build_play_tab()
@@ -2996,6 +3004,12 @@ class MainWindow(QMainWindow):
         else:
             super().keyPressEvent(event)
 
+    def on_tab_changed(self, index: int) -> None:
+        """Set appropriate focus when switching tabs."""
+        if index == 1:  # Deck Builder tab (0-indexed: Play=0, Deck Builder=1, etc.)
+            # Set focus to the card pool list for immediate arrow key navigation
+            self.builder_pool_list.setFocus()
+            
     def on_min_deck_size_changed(self, value: int) -> None:
         self.config["min_deck_size"] = int(value)
         self.save_app_config()
