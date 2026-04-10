@@ -685,6 +685,7 @@ class DeckListWidget(QListWidget):
                 self._rubberband_preserve_current_row = getattr(self, "_pending_drag_focus_row", self.currentRow())
             self._rubberband_drag_active = True
             self._pending_clear_current_on_release = False
+            self._pending_click_ensure_visible_row = None
             self.viewport().update()
         super().mouseMoveEvent(event)
         if drag_started and self._rubberband_drag_active:
@@ -1202,6 +1203,7 @@ class Storage:
             "play_timer_game_start_seconds": 120,
             "play_timer_draw_enabled": True,
             "play_timer_draw_seconds": 300,
+            "metronome_use_thump_sound": False,
         }
 
     def save_config(self, config: dict) -> None:
@@ -1395,7 +1397,12 @@ class MainWindow(QMainWindow):
         if tick_wav_path.exists():
             tick_source = QUrl.fromLocalFile(str(tick_wav_path.resolve()))
             self.metronome_tick_sound.setSource(tick_source)
-            self.metronome_tick_alt_sound.setSource(tick_source)
+        
+        # Load thump sound as alternative metronome option
+        thump_wav_path = sounds_dir / "metronome_tick_thump.wav"
+        if thump_wav_path.exists():
+            thump_source = QUrl.fromLocalFile(str(thump_wav_path.resolve()))
+            self.metronome_tick_alt_sound.setSource(thump_source)
 
     def load_countdown_sounds(self) -> None:
         sounds_dir = self.default_sounds_folder()
@@ -2044,6 +2051,13 @@ class MainWindow(QMainWindow):
         self.metronome_audio_warmup_spin.setEnabled(self.metronome_audio_warmup_enabled())
         self.metronome_audio_warmup_spin.valueChanged.connect(self.on_metronome_audio_warmup_ms_changed)
         audio_form.addRow("Metronome Warmup Delay", self.metronome_audio_warmup_spin)
+        
+        # Metronome thump sound option
+        self.metronome_thump_checkbox = QCheckBox("Use thump metronome sound")
+        self.metronome_thump_checkbox.setChecked(self.use_thump_metronome_sound())
+        self.metronome_thump_checkbox.toggled.connect(self.on_audio_metronome_thump_toggled)
+        audio_form.addRow(self.metronome_thump_checkbox)
+        
         self.max_metronome_bpm_spin = QSpinBox()
         self.max_metronome_bpm_spin.setMinimum(20)
         self.max_metronome_bpm_spin.setMaximum(2000)
@@ -3062,6 +3076,15 @@ class MainWindow(QMainWindow):
         self.config["audio_metronome_warmup_enabled"] = bool(checked)
         self.metronome_audio_warmup_spin.setEnabled(bool(checked))
         self.save_app_config()
+
+    def on_audio_metronome_thump_toggled(self, checked: bool) -> None:
+        """Save metronome thump sound preference to config."""
+        self.config["metronome_use_thump_sound"] = bool(checked)
+        self.save_app_config()
+
+    def use_thump_metronome_sound(self) -> bool:
+        """Return whether thump metronome sound is enabled."""
+        return bool(self.config.get("metronome_use_thump_sound", False))
 
     def on_restore_window_state_toggled(self, checked: bool) -> None:
         self.config["restore_window_state"] = bool(checked)
@@ -4928,9 +4951,12 @@ class MainWindow(QMainWindow):
     def play_metronome_click(self, accented: bool) -> None:
         if not self.metronome_sound_checkbox.isChecked():
             return
-        if self.metronome_tick_sound.source().isValid():
-            sound = self.metronome_tick_alt_sound if self.metronome_use_alt_tick_sound else self.metronome_tick_sound
-            self.metronome_use_alt_tick_sound = not self.metronome_use_alt_tick_sound
+        
+        # Select sound based on thump option
+        use_thump = self.config.get("metronome_use_thump_sound", False)
+        sound = self.metronome_tick_alt_sound if use_thump else self.metronome_tick_sound
+        
+        if sound.source().isValid():
             sound.setVolume(0.62 if accented else 0.48)
             sound.play()
             return
