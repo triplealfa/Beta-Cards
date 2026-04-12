@@ -1034,7 +1034,18 @@ class ZoomableCardView(QGraphicsView):
             Qt.SmoothTransformation,
         )
         self.pixmap_item.setPixmap(scaled_pixmap)
-        self.scene.setSceneRect(scaled_pixmap.rect())
+        # FIX: Always ensure the scene rect matches the current pixmap size to prevent expansion.
+        # Even for GIFs, we want the scene boundaries to stay stable relative to the visible content.
+        if pixmap_to_use is None or not self.movie:
+            self.scene.setSceneRect(scaled_pixmap.rect())
+        else:
+            # For GIFs, keep the scene rect tied to the original (first) frame size to avoid layout shifts.
+            if not self.original_pixmap.isNull():
+                # We scale the original pixmap rect by the current zoom level for consistency.
+                scale = self._fit_scale() * self.user_zoom
+                orig_w = max(1, int(round(self.original_pixmap.width() * scale)))
+                orig_h = max(1, int(round(self.original_pixmap.height() * scale)))
+                self.scene.setSceneRect(0, 0, orig_w, orig_h)
 
         if center_on_scene:
             self.centerOn(self.pixmap_item.boundingRect().center())
@@ -4860,12 +4871,43 @@ class MainWindow(QMainWindow):
             label.setPixmap(QPixmap())
             label.setText("No image available")
             return
-        pixmap = QPixmap(image_path)
-        target_width = max(1, int(label.width() * zoom))
-        target_height = max(1, int(label.height() * zoom))
-        scaled = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        label.setPixmap(scaled)
-        label.setText("")
+
+        # Cleanup previous movie if any (to avoid multiple movies playing/leaks)
+        if hasattr(self, "_card_maker_movie") and self._card_maker_movie:
+            self._card_maker_movie.stop()
+            self._card_maker_movie = None
+
+        if image_path.lower().endswith(".gif"):
+            self._card_maker_movie = QMovie(image_path)
+            # Capture the stable size of the label at the start of playback 
+            # to prevent the width/height feedback loop during updates.
+            self._card_maker_ref_size = (label.width(), label.height())
+
+            def update_gif_frame():
+                pixmap = self._card_maker_movie.currentPixmap()
+                if not pixmap.isNull() and self._card_maker_ref_size:
+                    ref_w, ref_h = self._card_maker_ref_size
+                    target_width = max(1, int(ref_w * zoom))
+                    target_height = max(1, int(ref_h * zoom))
+                    scaled = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    label.setPixmap(scaled)
+                    label.setText("")
+
+            self._card_maker_movie.frameChanged.connect(update_gif_frame)
+            self._card_maker_movie.start()
+            # Trigger initial frame update
+            update_gif_frame()
+        else:
+            pixmap = QPixmap(image_path)
+            if pixmap.isNull():
+                label.setPixmap(QPixmap())
+                label.setText("No image available")
+                return
+            target_width = max(1, int(label.width() * zoom))
+            target_height = max(1, int(label.height() * zoom))
+            scaled = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            label.setPixmap(scaled)
+            label.setText("")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
