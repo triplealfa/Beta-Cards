@@ -1228,6 +1228,15 @@ class Storage:
         return decks
 
     def save_deck(self, deck: Deck) -> None:
+        # Cleanup any old files for this deck ID to prevent orphans during rename
+        for deck_file in self.decks_dir.glob("*.json"):
+            if deck_file.stem == deck.id or deck_file.stem.endswith(f"_{deck.id}"):
+                try:
+                    if deck_file.exists():
+                        deck_file.unlink()
+                except Exception as error:
+                    print(f"Error deleting old deck file {deck_file}: {error}")
+
         name_slug = slugify(deck.name)
         path = self.decks_dir / f"{name_slug}_{deck.id}.json"
         path.write_text(json.dumps(asdict(deck), indent=2), encoding="utf-8")
