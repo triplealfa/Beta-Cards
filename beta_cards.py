@@ -1228,13 +1228,17 @@ class Storage:
         return decks
 
     def save_deck(self, deck: Deck) -> None:
-        path = self.decks_dir / f"{deck.id}.json"
+        name_slug = slugify(deck.name)
+        path = self.decks_dir / f"{name_slug}_{deck.id}.json"
         path.write_text(json.dumps(asdict(deck), indent=2), encoding="utf-8")
 
     def delete_deck(self, deck_id: str) -> None:
-        path = self.decks_dir / f"{deck_id}.json"
-        if path.exists():
-            path.unlink()
+        # Try to find the deck file by ID in both old and new formats
+        for deck_file in self.decks_dir.glob("*.json"):
+            if deck_file.stem == deck_id or deck_file.stem.endswith(f"_{deck_id}"):
+                if deck_file.exists():
+                    deck_file.unlink()
+                break
 
 
 class MainWindow(QMainWindow):
