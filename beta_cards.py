@@ -34,7 +34,7 @@ except ImportError:
 
 from odt_rules_parser import load_rules_as_html
 from PySide6.QtCore import QEvent, QIODevice, QModelIndex, QRect, QSize, QTimer, Qt, QUrl, Signal, QItemSelectionModel
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen, QMovie
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices, QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -898,6 +898,7 @@ class ZoomableCardView(QGraphicsView):
         self.scene.addItem(self.pixmap_item)
         self.placeholder_text = "No Active Game"
         self.original_pixmap = QPixmap()
+        self.movie: Optional[QMovie] = None
         self.user_zoom = 1.0
         self.max_user_zoom = 6.0
         self.manual_zoom_enabled = True
@@ -927,23 +928,53 @@ class ZoomableCardView(QGraphicsView):
     def show_placeholder(self, text: str) -> None:
         self.placeholder_text = text
         self.original_pixmap = QPixmap()
+        if self.movie:
+            self.movie.stop()
+            self.movie = None
         self.pixmap_item.setPixmap(QPixmap())
         self.scene.setSceneRect(0, 0, 1, 1)
         self.user_zoom = 1.0
         self.resetTransform()
         self.viewport().update()
 
-    def set_image_path(self, image_path: str) -> None:
+    def set_image_path(self, image_path: str) -> None:        
         if not image_path or not Path(image_path).exists():
             self.show_placeholder("No image available")
             return
-        pixmap = QPixmap(image_path)
-        if pixmap.isNull():
-            self.show_placeholder("No image available")
-            return
-        self.original_pixmap = pixmap
+
+        # Cleanup previous movie if any
+        if self.movie:
+            self.movie.stop()
+            self.movie = None
+
+        if image_path.lower().endswith(".gif"):
+            self.movie = QMovie(image_path)
+            self.movie.frameChanged.connect(self._on_gif_primed_update)
+            self.movie.start()
+            # For GIF, we'll use the first frame to set up scaling
+            pixmap = QPixmap(image_path)
+            if pixmap.isNull():
+                self.show_placeholder("No image available")
+                return
+            self.original_pixmap = pixmap
+        else:
+            pixmap = QPixmap(image_path)
+            if pixmap.isNull():
+                self.show_placeholder("No image available")
+                return
+            self.original_pixmap = pixmap
+
         self.user_zoom = 1.0
         self._update_scaled_pixmap(center_on_scene=True)
+
+    def _on_gif_primed_update(self, frame_number: int) -> None:
+        if self.movie:
+            current_pixmap = self.movie.currentPixmap()
+            if not current_pixmap.isNull():
+                # For GIF frames, we don't have a static original_pixmap that changes, 
+                # so we update the pixmap_item with the current frame directly.
+                # We still use the scaling logic based on the first frame (original_pixmap).
+                self._update_scaled_pixmap(center_on_scene=True, pixmap_to_use=current_pixmap)
 
     def zoom_to_default(self) -> None:
         if not self.has_image():
@@ -985,16 +1016,18 @@ class ZoomableCardView(QGraphicsView):
         center_on_scene: bool = False,
         anchor_viewport_pos=None,
         anchor_relative_pos: Optional[tuple[float, float]] = None,
+        pixmap_to_use: Optional[QPixmap] = None,
     ) -> None:
-        if self.original_pixmap.isNull():
+        target_source = pixmap_to_use if pixmap_to_use is not None else self.original_pixmap
+        if target_source.isNull():
             self.pixmap_item.setPixmap(QPixmap())
             self.scene.setSceneRect(0, 0, 1, 1)
             return
 
         scale = self._fit_scale() * self.user_zoom
-        target_width = max(1, int(round(self.original_pixmap.width() * scale)))
-        target_height = max(1, int(round(self.original_pixmap.height() * scale)))
-        scaled_pixmap = self.original_pixmap.scaled(
+        target_width = max(1, int(round(target_source.width() * scale)))
+        target_height = max(1, int(round(target_source.height() * scale)))
+        scaled_pixmap = target_source.scaled(
             target_width,
             target_height,
             Qt.KeepAspectRatio,
@@ -2645,7 +2678,6 @@ class MainWindow(QMainWindow):
         self.metronome_bar.setValue(0)
         self.metronome_bar.setFormat("1")
         self.metronome_bar.setAlignment(Qt.AlignCenter)
-        self.metronome_bar.setTextVisible(True)
         self.metronome_bar.setFixedHeight(120)
         self.metronome_bar.setFixedWidth(132)
         self.metronome_bar.setStyleSheet(
@@ -4426,25 +4458,23 @@ class MainWindow(QMainWindow):
         )
         self.open_card_preview_dialog(card)
 
-    def show_current_play_card_preview(self) -> None:
+    def show_current_play_card_preview(self) -> None:        
         if not self.play_current_card_id:
             return
         play_deck = self.get_selected_play_deck()
-        card_data = self.get_card_for_deck_entry(self.play_current_card_id, play_deck)
-        card = Card(
-            id=card_data.get("id", self.play_current_card_id),
-            name=card_data.get("name", self.play_current_card_id),
-            value=card_data.get("value", ""),
-            faction=card_data.get("faction", ""),
-            effect=card_data.get("effect", ""),
-            set_name=card_data.get("set_name", ""),
-            card_number=card_data.get("card_number", ""),
-            artist_name=card_data.get("artist_name", ""),
-            card_author=card_data.get("card_author", ""),
-            image_path=card_data.get("image_path", ""),
-            source=card_data.get("source", ""),
-        )
-        self.open_card_preview_dialog(card)
+        card = self.get_card_for_deck_entry(self.play_current_card_id, play_deck)
+        self.set_play_hidden_card_details(card)
+        self.play_hide_card_button.setEnabled(True)
+        self.play_hide_card_button.setText("Show Card" if self.play_card_hidden else "Hide Card")
+        if self.play_card_hidden:
+            if self.play_show_hidden_card_details_enabled():
+                self.play_card_view_stack.setCurrentWidget(self.play_card_details_panel)
+            else:
+                self.play_card_view_stack.setCurrentWidget(self.play_image_view)
+                self.play_image_view.show_placeholder("Card Hidden")
+            return
+        self.play_card_view_stack.setCurrentWidget(self.play_image_view)
+        self.play_image_view.set_image_path(card.get("image_path", ""))
 
     def get_selected_play_deck(self) -> Optional[Deck]:
         deck_id = self.play_deck_combo.currentData()
@@ -4648,20 +4678,8 @@ class MainWindow(QMainWindow):
         card_id = item.data(0, Qt.UserRole)
         card = self.library_by_id.get(card_id)
         if card is None:
-            card_data = self.get_card_for_deck_entry(card_id, self.get_current_saved_deck())
-            card = Card(
-                id=card_data.get("id", card_id),
-                name=card_data.get("name", card_id),
-                value=card_data.get("value", ""),
-                faction=card_data.get("faction", ""),
-                effect=card_data.get("effect", ""),
-                set_name=card_data.get("set_name", ""),
-                card_number=card_data.get("card_number", ""),
-                artist_name=card_data.get("artist_name", ""),
-                card_author=card_data.get("card_author", ""),
-                image_path=card_data.get("image_path", ""),
-                source=card_data.get("source", ""),
-            )
+            self.update_active_preview_navigation_buttons()
+            return
         self.update_active_preview_card(card)
 
     def update_active_preview_navigation_buttons(self) -> None:
@@ -4711,7 +4729,7 @@ class MainWindow(QMainWindow):
         if item is None:
             self.update_active_preview_navigation_buttons()
             return
-        card = self.library_by_id.get(item.data(0, Qt.UserRole))
+        card = self.library_by_id.get(item.data(Qt.UserRole))
         if card is None:
             self.update_active_preview_navigation_buttons()
             return
@@ -4723,9 +4741,37 @@ class MainWindow(QMainWindow):
         self.active_preview_card_id = card.id
         self.active_preview_dialog.setWindowTitle(card.name)
         self.active_preview_view.set_image_path(card.image_path)
+
+        # Update dialog size during navigation
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else self.geometry()
+        max_width = max(480, int(available.width() * 0.92))
+        max_height = max(640, int(available.height() * 0.92))
+
+        pixmap = QPixmap(card.image_path) if card.image_path and Path(card.image_path).exists() else QPixmap()
+        if pixmap.isNull():
+            preview_width = min(700, max_width)
+            preview_height = min(900, max_height)
+        else:
+            preview_width = min(max_width, max(480, pixmap.width()))
+            preview_height = min(max_height, max(640, pixmap.height()))
+
+        self.active_preview_dialog.resize(preview_width, preview_height)
+        self.active_preview_view.setMinimumSize(preview_width, preview_height)
+        
+        # Re-center the dialog
+        self.active_preview_dialog.move(
+            available.center().x() - self.active_preview_dialog.width() // 2,
+            available.center().y() - self.active_preview_dialog.height() // 2,
+        )
+
         self.update_active_preview_navigation_buttons()
 
     def open_card_preview_dialog(self, card: Card, source: str = "") -> None:
+        # Test
+        print(f"open_card_preview_dialog")
+        # Test
+
         if self.active_preview_dialog is not None:
             self.active_preview_dialog.close()
         dialog = QDialog(self, Qt.Popup | Qt.FramelessWindowHint)
@@ -4742,7 +4788,7 @@ class MainWindow(QMainWindow):
         else:
             preview_width = min(max_width, max(480, pixmap.width()))
             preview_height = min(max_height, max(640, pixmap.height()))
-
+        
         dialog.resize(preview_width, preview_height)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(0, 0, 0, 0)
