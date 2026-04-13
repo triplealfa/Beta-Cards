@@ -1257,7 +1257,7 @@ class Storage:
             "play_timer_game_start_enabled": True,
             "play_timer_game_start_seconds": 120,
             "play_timer_draw_enabled": True,
-            "play_timer_draw_seconds": 300,
+            "play_timer_draw_seconds": 180,
             "metronome_use_thump_sound": False,
         }
 
