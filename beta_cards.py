@@ -79,7 +79,7 @@ from PySide6.QtWidgets import (
 
 APP_DISPLAY_NAME = "Beta Cards"
 APP_STORAGE_NAME = "BetaCards"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 APP_WINDOWS_APP_ID = "TripleAlfa.BetaCards"
 APP_RELEASE_NOTES = """
 The first alpha release of Beta Cards.
@@ -968,7 +968,7 @@ class ZoomableCardView(QGraphicsView):
         self._update_scaled_pixmap(center_on_scene=True)
 
     def _on_gif_primed_update(self, frame_number: int) -> None:
-        if self.movie:
+        if self.movie and self.isVisible():
             current_pixmap = self.movie.currentPixmap()
             if not current_pixmap.isNull():
                 # For GIF frames, we don't have a static original_pixmap that changes, 
@@ -1056,6 +1056,17 @@ class ZoomableCardView(QGraphicsView):
             anchor_y = anchor_relative_pos[1] * scaled_pixmap.height()
             self.horizontalScrollBar().setValue(int(round(anchor_x - anchor_viewport_pos.x())))
             self.verticalScrollBar().setValue(int(round(anchor_y - anchor_viewport_pos.y())))
+    
+    #DEBUG Test Code method
+    def reset_view(self) -> None:
+        """Resets the view to a neutral state before loading a new image."""
+        self.user_zoom = 1.0
+        self.original_pixmap = QPixmap() # Clear current pixmap
+        self.show_placeholder("Loading...")
+        # Reset scene rect to a small, stable size so it doesn't carry over expansion
+        self.scene.setSceneRect(0, 0, 1, 1)
+        self.setMinimumSize(0, 0)
+        self.updateGeometry()
 
     def wheelEvent(self, event) -> None:
         if not self.has_image():
@@ -4749,6 +4760,7 @@ class MainWindow(QMainWindow):
     def update_active_preview_card(self, card: Card) -> None:
         if self.active_preview_dialog is None or self.active_preview_view is None:
             return
+        #self.active_preview_view.reset_view() #DEBUG Test Code
         self.active_preview_card_id = card.id
         self.active_preview_dialog.setWindowTitle(card.name)
         self.active_preview_view.set_image_path(card.image_path)
@@ -4779,10 +4791,6 @@ class MainWindow(QMainWindow):
         self.update_active_preview_navigation_buttons()
 
     def open_card_preview_dialog(self, card: Card, source: str = "") -> None:
-        # Test
-        print(f"open_card_preview_dialog")
-        # Test
-
         if self.active_preview_dialog is not None:
             self.active_preview_dialog.close()
         dialog = QDialog(self, Qt.Popup | Qt.FramelessWindowHint)
