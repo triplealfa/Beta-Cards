@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -91,6 +92,8 @@ ICON_BIG = 1
 LR_LOADFROMFILE = 0x0010
 MIN_DECK_SIZE = 30
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+DEFAULT_METRONOME_BEAT_COLOR = "#6ecbff"
+DEFAULT_METRONOME_ACCENT_COLOR = "#ffb347"
 
 
 class CardGridListWidget(QListWidget):
@@ -1259,6 +1262,8 @@ class Storage:
             "play_timer_draw_enabled": True,
             "play_timer_draw_seconds": 180,
             "metronome_use_thump_sound": False,
+            "metronome_beat_color": DEFAULT_METRONOME_BEAT_COLOR,
+            "metronome_accent_color": DEFAULT_METRONOME_ACCENT_COLOR,
         }
 
     def save_config(self, config: dict) -> None:
@@ -1727,6 +1732,28 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return 4
 
+    def normalized_color(self, value: object, fallback: str) -> str:
+        color = QColor(str(value))
+        if color.isValid():
+            return color.name()
+        return fallback
+
+    def metronome_beat_color(self) -> str:
+        return self.normalized_color(self.config.get("metronome_beat_color"), DEFAULT_METRONOME_BEAT_COLOR)
+
+    def metronome_accent_color(self) -> str:
+        return self.normalized_color(self.config.get("metronome_accent_color"), DEFAULT_METRONOME_ACCENT_COLOR)
+
+    def metronome_bar_style(self, chunk_color: str) -> str:
+        return (
+            "QProgressBar { border: 1px solid #666; border-radius: 10px; background: #161616; "
+            "color: #f5f5f5; font-size: 28px; font-weight: bold; text-align: center; }"
+            f"QProgressBar::chunk {{ background: {chunk_color}; border-radius: 8px; }}"
+        )
+
+    def metronome_chunk_color(self, accented: bool = False) -> str:
+        return self.metronome_accent_color() if accented else self.metronome_beat_color()
+
     def play_timer_game_start_enabled(self) -> bool:
         return bool(self.config.get("play_timer_game_start_enabled", True))
 
@@ -2125,6 +2152,31 @@ class MainWindow(QMainWindow):
         self.metronome_thump_checkbox.setChecked(self.use_thump_metronome_sound())
         self.metronome_thump_checkbox.toggled.connect(self.on_audio_metronome_thump_toggled)
         audio_form.addRow(self.metronome_thump_checkbox)
+
+        self.metronome_beat_color_swatch = QLabel()
+        self.metronome_beat_color_swatch.setFixedSize(34, 22)
+        beat_color_row = QHBoxLayout()
+        beat_color_button = QPushButton("Choose...")
+        beat_color_button.clicked.connect(lambda: self.choose_metronome_color("beat"))
+        beat_color_row.addWidget(self.metronome_beat_color_swatch)
+        beat_color_row.addWidget(beat_color_button)
+        beat_color_row.addStretch(1)
+        audio_form.addRow("Metronome Beat Color", beat_color_row)
+
+        self.metronome_accent_color_swatch = QLabel()
+        self.metronome_accent_color_swatch.setFixedSize(34, 22)
+        accent_color_row = QHBoxLayout()
+        accent_color_button = QPushButton("Choose...")
+        accent_color_button.clicked.connect(lambda: self.choose_metronome_color("accent"))
+        accent_color_row.addWidget(self.metronome_accent_color_swatch)
+        accent_color_row.addWidget(accent_color_button)
+        accent_color_row.addStretch(1)
+        audio_form.addRow("Metronome Accent Color", accent_color_row)
+
+        reset_metronome_colors_button = QPushButton("Reset Metronome Colors")
+        reset_metronome_colors_button.clicked.connect(self.reset_metronome_colors)
+        audio_form.addRow(reset_metronome_colors_button)
+        self.refresh_metronome_color_swatches()
         
         self.max_metronome_bpm_spin = QSpinBox()
         self.max_metronome_bpm_spin.setMinimum(20)
@@ -2702,11 +2754,7 @@ class MainWindow(QMainWindow):
         self.metronome_bar.setAlignment(Qt.AlignCenter)
         self.metronome_bar.setFixedHeight(120)
         self.metronome_bar.setFixedWidth(132)
-        self.metronome_bar.setStyleSheet(
-            "QProgressBar { border: 1px solid #666; border-radius: 10px; background: #161616; "
-            "color: #f5f5f5; font-size: 28px; font-weight: bold; text-align: center; }"
-            "QProgressBar::chunk { background: #ffb347; border-radius: 8px; }"
-        )
+        self.metronome_bar.setStyleSheet(self.metronome_bar_style(self.metronome_beat_color()))
         metronome_meter_row = QHBoxLayout()
         metronome_meter_row.addStretch(1)
         metronome_meter_row.addWidget(self.metronome_bar)
@@ -3152,6 +3200,48 @@ class MainWindow(QMainWindow):
     def use_thump_metronome_sound(self) -> bool:
         """Return whether thump metronome sound is enabled."""
         return bool(self.config.get("metronome_use_thump_sound", False))
+
+    def refresh_metronome_color_swatches(self) -> None:
+        swatches = (
+            (self.metronome_beat_color_swatch, self.metronome_beat_color()),
+            (self.metronome_accent_color_swatch, self.metronome_accent_color()),
+        )
+        for swatch, color in swatches:
+            swatch.setStyleSheet(f"background: {color}; border: 1px solid #666; border-radius: 3px;")
+
+    def apply_current_metronome_bar_color(self) -> None:
+        if not hasattr(self, "metronome_bar"):
+            return
+        if hasattr(self, "metronome_visual_checkbox") and not self.metronome_visual_checkbox.isChecked():
+            chunk_color = "#161616"
+        else:
+            accented = self.metronome_current_beat == 1 and self.metronome_beats_per_bar > 1
+            chunk_color = self.metronome_chunk_color(accented)
+        self.metronome_bar.setStyleSheet(self.metronome_bar_style(chunk_color))
+
+    def choose_metronome_color(self, color_type: str) -> None:
+        if color_type == "accent":
+            config_key = "metronome_accent_color"
+            current_color = self.metronome_accent_color()
+            title = "Choose Metronome Accent Color"
+        else:
+            config_key = "metronome_beat_color"
+            current_color = self.metronome_beat_color()
+            title = "Choose Metronome Beat Color"
+        color = QColorDialog.getColor(QColor(current_color), self, title)
+        if not color.isValid():
+            return
+        self.config[config_key] = color.name()
+        self.refresh_metronome_color_swatches()
+        self.apply_current_metronome_bar_color()
+        self.save_app_config()
+
+    def reset_metronome_colors(self) -> None:
+        self.config["metronome_beat_color"] = DEFAULT_METRONOME_BEAT_COLOR
+        self.config["metronome_accent_color"] = DEFAULT_METRONOME_ACCENT_COLOR
+        self.refresh_metronome_color_swatches()
+        self.apply_current_metronome_bar_color()
+        self.save_app_config()
 
     def on_restore_window_state_toggled(self, checked: bool) -> None:
         self.config["restore_window_state"] = bool(checked)
@@ -5092,14 +5182,10 @@ class MainWindow(QMainWindow):
         accented = self.metronome_current_beat == 1 and beats_per_bar > 1
         self.metronome_last_beat_at = time.monotonic()
         self.update_metronome_display()
-        chunk_color = "#ffb347" if accented else "#6ecbff"
+        chunk_color = self.metronome_chunk_color(accented)
         if not self.metronome_visual_checkbox.isChecked():
             chunk_color = "#161616"
-        self.metronome_bar.setStyleSheet(
-            "QProgressBar { border: 1px solid #666; border-radius: 10px; background: #161616; "
-            "color: #f5f5f5; font-size: 28px; font-weight: bold; text-align: center; }"
-            f"QProgressBar::chunk {{ background: {chunk_color}; border-radius: 8px; }}"
-        )
+        self.metronome_bar.setStyleSheet(self.metronome_bar_style(chunk_color))
         self.update_metronome_bar()
         self.play_metronome_click(accented)
 
@@ -5145,11 +5231,7 @@ class MainWindow(QMainWindow):
             self.start_metronome_audio_keepalive()
 
     def on_metronome_visual_toggled(self, checked: bool) -> None:
-        self.metronome_bar.setStyleSheet(
-            "QProgressBar { border: 1px solid #666; border-radius: 10px; background: #161616; "
-            "color: #f5f5f5; font-size: 28px; font-weight: bold; text-align: center; }"
-            f"QProgressBar::chunk {{ background: {'#161616' if not checked else '#6ecbff'}; border-radius: 8px; }}"
-        )
+        self.apply_current_metronome_bar_color()
         self.update_metronome_display()
         if not checked:
             self.metronome_bar.setValue(0)
