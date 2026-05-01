@@ -24,6 +24,7 @@ import sys
 import time
 import ctypes
 from dataclasses import asdict, dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -34,7 +35,7 @@ except ImportError:
 
 from odt_rules_parser import load_rules_as_html
 from PySide6.QtCore import QEvent, QIODevice, QModelIndex, QRect, QSize, QTimer, Qt, QUrl, Signal, QItemSelectionModel
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen, QMovie
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen, QMovie, QTextDocument
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices, QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1158,6 +1159,328 @@ class ZoomableCardView(QGraphicsView):
         painter.setFont(self.font())
         painter.drawText(self.viewport().rect(), Qt.AlignCenter | Qt.TextWordWrap, self.placeholder_text)
         painter.restore()
+
+
+class PositionedTextParser(HTMLParser):
+    VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.fragments = []
+        self._style_stack = [(None, None)]
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() in self.VOID_TAGS:
+            return
+
+        current_top, current_line_height = self._style_stack[-1]
+        attr_map = {name.lower(): value for name, value in attrs}
+        style = attr_map.get("style", "")
+        top = self._css_length(style, "top")
+        line_height = self._css_length(style, "line-height")
+        if top is None:
+            top = self._number(attr_map.get("y"))
+        self._style_stack.append(
+            (
+                current_top if top is None else top,
+                current_line_height if line_height is None else line_height,
+            )
+        )
+
+    def handle_endtag(self, tag: str) -> None:
+        if len(self._style_stack) > 1:
+            self._style_stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        text = re.sub(r"\s+", " ", data)
+        if not text.strip():
+            return
+        top, line_height = self._style_stack[-1]
+        if top is None:
+            return
+        self.fragments.append((top, line_height, text))
+
+    @staticmethod
+    def _css_length(style: str, property_name: str) -> Optional[float]:
+        match = re.search(
+            rf"(?:^|;)\s*{re.escape(property_name)}\s*:\s*(-?\d+(?:\.\d+)?)",
+            style,
+            re.IGNORECASE,
+        )
+        return float(match.group(1)) if match else None
+
+    @staticmethod
+    def _number(value: Optional[str]) -> Optional[float]:
+        if not value:
+            return None
+        match = re.search(r"-?\d+(?:\.\d+)?", value)
+        return float(match.group(0)) if match else None
+
+    def to_effect_text(self) -> str:
+        if not self.fragments:
+            return ""
+
+        grouped_lines = []
+        for top, line_height, text in sorted(self.fragments, key=lambda item: item[0]):
+            if grouped_lines and abs(grouped_lines[-1]["top"] - top) < 1.0:
+                grouped_lines[-1]["parts"].append(text)
+                if line_height is not None:
+                    grouped_lines[-1]["line_heights"].append(line_height)
+            else:
+                grouped_lines.append(
+                    {
+                        "top": top,
+                        "parts": [text],
+                        "line_heights": [line_height] if line_height is not None else [],
+                    }
+                )
+
+        if len(grouped_lines) < 2:
+            return ""
+
+        line_tops = [line["top"] for line in grouped_lines]
+        gaps = [
+            line_tops[index + 1] - line_tops[index]
+            for index in range(len(line_tops) - 1)
+            if line_tops[index + 1] > line_tops[index]
+        ]
+        if not gaps:
+            return ""
+
+        line_heights = [
+            height
+            for line in grouped_lines
+            for height in line["line_heights"]
+            if height and height > 0
+        ]
+        line_step = min(line_heights) if line_heights else min(gaps)
+        if line_step <= 0:
+            return ""
+
+        effect_text = re.sub(r"\s+", " ", "".join(grouped_lines[0]["parts"])).strip()
+        previous_top = grouped_lines[0]["top"]
+        for line in grouped_lines[1:]:
+            gap = max(0.0, line["top"] - previous_top)
+            paragraph_gap_count = max(0, int(round(gap / line_step)) - 1)
+            effect_text += "\n" * (paragraph_gap_count + 1)
+            effect_text += re.sub(r"\s+", " ", "".join(line["parts"])).strip()
+            previous_top = line["top"]
+        return effect_text.strip()
+
+
+class CardEffectTextEdit(QTextEdit):
+    SOFT_LINE_BREAK = "\u2028"
+    HIDDEN_CLIPBOARD_MARKERS = "\ufeff\ufffc\u200b\u200c\u200d\u2060"
+    RTF_FORMAT_MARKERS = ("rtf", "rich text format")
+    RTF_DESTINATIONS = {
+        "author",
+        "colortbl",
+        "comment",
+        "fonttbl",
+        "generator",
+        "info",
+        "object",
+        "pict",
+        "stylesheet",
+        "subject",
+        "title",
+    }
+
+    def set_effect_text(self, text: str) -> None:
+        if not text:
+            self.clear()
+            return
+        self.setPlainText(self.normalize_effect_text(text))
+
+    def to_effect_text(self) -> str:
+        return self.cleanup_effect_text(self.toPlainText())
+
+    def insertFromMimeData(self, source) -> None:
+        rtf_text = self.rtf_mime_to_effect_text(source)
+        if rtf_text:
+            self.insertPlainText(rtf_text)
+            return
+        if source.hasHtml():
+            effect_text = self.html_to_effect_text(source.html(), source.text())
+            self.insertPlainText(effect_text)
+            return
+        super().insertFromMimeData(source)
+
+    @classmethod
+    def normalize_effect_text(cls, text: str) -> str:
+        return (text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+    @classmethod
+    def rtf_mime_to_effect_text(cls, source) -> str:
+        for format_name in source.formats():
+            normalized_name = format_name.lower()
+            if not any(marker in normalized_name for marker in cls.RTF_FORMAT_MARKERS):
+                continue
+            rtf_data = bytes(source.data(format_name))
+            if not rtf_data:
+                continue
+            rtf_text = rtf_data.decode("latin-1", errors="ignore")
+            effect_text = cls.rtf_to_effect_text(rtf_text)
+            if effect_text:
+                return effect_text
+        return ""
+
+    @classmethod
+    def rtf_to_effect_text(cls, rtf_text: str) -> str:
+        output = []
+        state_stack = []
+        skip_destination = False
+        unicode_fallback_count = 1
+        index = 0
+
+        while index < len(rtf_text):
+            char = rtf_text[index]
+
+            if char == "{":
+                state_stack.append((skip_destination, unicode_fallback_count))
+                index += 1
+                continue
+
+            if char == "}":
+                if state_stack:
+                    skip_destination, unicode_fallback_count = state_stack.pop()
+                index += 1
+                continue
+
+            if char != "\\":
+                if not skip_destination and char not in "\r\n":
+                    output.append(char)
+                index += 1
+                continue
+
+            index += 1
+            if index >= len(rtf_text):
+                break
+
+            control_start = rtf_text[index]
+            if control_start in "\\{}":
+                if not skip_destination:
+                    output.append(control_start)
+                index += 1
+                continue
+
+            if control_start == "'":
+                hex_value = rtf_text[index + 1:index + 3]
+                if len(hex_value) == 2 and not skip_destination:
+                    try:
+                        output.append(bytes.fromhex(hex_value).decode("cp1252"))
+                    except Exception:
+                        pass
+                index += 3
+                continue
+
+            if control_start.isalpha():
+                word_start = index
+                while index < len(rtf_text) and rtf_text[index].isalpha():
+                    index += 1
+                word = rtf_text[word_start:index]
+
+                sign = 1
+                if index < len(rtf_text) and rtf_text[index] == "-":
+                    sign = -1
+                    index += 1
+
+                number_start = index
+                while index < len(rtf_text) and rtf_text[index].isdigit():
+                    index += 1
+                parameter = None
+                if index > number_start:
+                    parameter = sign * int(rtf_text[number_start:index])
+
+                if index < len(rtf_text) and rtf_text[index] == " ":
+                    index += 1
+            else:
+                word = control_start
+                parameter = None
+                index += 1
+
+            if word == "*":
+                skip_destination = True
+                continue
+
+            if word in cls.RTF_DESTINATIONS:
+                skip_destination = True
+                continue
+
+            if skip_destination:
+                continue
+
+            if word == "line":
+                output.append("\n")
+            elif word == "par":
+                output.append("\n\n")
+            elif word == "tab":
+                output.append("\t")
+            elif word in ("~", " "):
+                output.append(" ")
+            elif word == "_":
+                output.append("-")
+            elif word == "uc" and parameter is not None:
+                unicode_fallback_count = max(0, parameter)
+            elif word == "u" and parameter is not None:
+                codepoint = parameter if parameter >= 0 else parameter + 65536
+                try:
+                    output.append(chr(codepoint))
+                except ValueError:
+                    pass
+                index = cls.skip_rtf_unicode_fallback(rtf_text, index, unicode_fallback_count)
+
+        return cls.cleanup_effect_text("".join(output))
+
+    @staticmethod
+    def skip_rtf_unicode_fallback(rtf_text: str, index: int, fallback_count: int) -> int:
+        skipped = 0
+        while index < len(rtf_text) and skipped < fallback_count:
+            if rtf_text[index] == "\\":
+                break
+            index += 1
+            skipped += 1
+        return index
+
+    @classmethod
+    def cleanup_effect_text(cls, text: str) -> str:
+        normalized = cls.normalize_effect_text(text)
+        normalized = normalized.translate(
+            {ord(marker): None for marker in cls.HIDDEN_CLIPBOARD_MARKERS}
+        )
+        normalized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", normalized)
+        lines = [line.rstrip() for line in normalized.split("\n")]
+        normalized = "\n".join(lines)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        return normalized.strip()
+
+    @classmethod
+    def html_to_effect_text(cls, source_html: str, fallback_text: str = "") -> str:
+        positioned_parser = PositionedTextParser()
+        try:
+            positioned_parser.feed(source_html)
+            positioned_text = positioned_parser.to_effect_text()
+            if positioned_text:
+                return positioned_text
+        except Exception:
+            pass
+
+        document = QTextDocument()
+        document.setHtml(source_html)
+        blocks = []
+        block = document.begin()
+        while block.isValid():
+            blocks.append(block.text().replace(cls.SOFT_LINE_BREAK, "\n"))
+            block = block.next()
+
+        if any("\n" in block_text for block_text in blocks):
+            return cls.cleanup_effect_text("\n\n".join(blocks))
+
+        fallback_text = cls.normalize_effect_text(fallback_text)
+        if fallback_text:
+            return cls.cleanup_effect_text(fallback_text)
+
+        return cls.cleanup_effect_text(document.toPlainText())
 
 
 @dataclass
@@ -2356,7 +2679,7 @@ class MainWindow(QMainWindow):
         self.card_maker_artist_name_input.setPlaceholderText("Artist name")
         self.card_maker_card_author_input = QLineEdit()
         self.card_maker_card_author_input.setPlaceholderText("Card author")
-        self.card_maker_effect_input = QTextEdit()
+        self.card_maker_effect_input = CardEffectTextEdit()
         self.card_maker_effect_input.setPlaceholderText("Effect text")
         form.addRow("Name", self.card_maker_name_input)
         form.addRow("Value", self.card_maker_value_input)
@@ -2976,7 +3299,7 @@ class MainWindow(QMainWindow):
                 self.card_maker_card_author_input.setText(
                     str(payload.get("card_author", payload.get("cardAuthor", "")))
                 )
-                self.card_maker_effect_input.setPlainText(
+                self.card_maker_effect_input.set_effect_text(
                     str(payload.get("effect", payload.get("text", payload.get("description", ""))))
                 )
                 self.card_maker_status_label.setText(f"Loaded existing data from {json_path.name}.")
@@ -2997,7 +3320,7 @@ class MainWindow(QMainWindow):
             self.card_maker_card_number_input.setText(parsed['card_number'])
             self.card_maker_artist_name_input.setText("")
             self.card_maker_card_author_input.setText(self.default_card_author())
-            self.card_maker_effect_input.setPlainText("")
+            self.card_maker_effect_input.set_effect_text("")
             self.card_maker_status_label.setText(
                 f"Parsed filename: Set '{parsed['set_name']}', Card #{parsed['card_number']}, Name '{parsed['name']}'"
             )
@@ -3010,7 +3333,7 @@ class MainWindow(QMainWindow):
             self.card_maker_card_number_input.setText("")
             self.card_maker_artist_name_input.setText("")
             self.card_maker_card_author_input.setText(self.default_card_author())
-            self.card_maker_effect_input.setPlainText("")
+            self.card_maker_effect_input.set_effect_text("")
             self.card_maker_status_label.setText(
                 "Filename doesn't match expected pattern. Using default naming."
             )
@@ -3040,7 +3363,7 @@ class MainWindow(QMainWindow):
         card_number = self.card_maker_card_number_input.text().strip()
         artist_name = self.card_maker_artist_name_input.text().strip()
         card_author = self.card_maker_card_author_input.text().strip()
-        effect = self.card_maker_effect_input.toPlainText().strip()
+        effect = self.card_maker_effect_input.to_effect_text()
         card_id = existing_json_id or stable_card_id_for_path(image_path)
         payload = {
             "id": card_id,
