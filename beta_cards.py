@@ -95,6 +95,7 @@ MIN_DECK_SIZE = 30
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 DEFAULT_METRONOME_BEAT_COLOR = "#6ecbff"
 DEFAULT_METRONOME_ACCENT_COLOR = "#ffb347"
+PREVIEW_NAV_BUTTON_WIDTH = 42
 
 
 class CardGridListWidget(QListWidget):
@@ -5191,6 +5192,16 @@ class MainWindow(QMainWindow):
 
         return preview_width, preview_height, available
 
+    def preview_dialog_navigation_width(self, source: Optional[str] = None) -> int:
+        if source is not None:
+            return PREVIEW_NAV_BUTTON_WIDTH * 2 if source in ("builder_pool", "deck_entries") else 0
+        width = 0
+        if self.active_preview_prev_button is not None:
+            width += self.active_preview_prev_button.width() or PREVIEW_NAV_BUTTON_WIDTH
+        if self.active_preview_next_button is not None:
+            width += self.active_preview_next_button.width() or PREVIEW_NAV_BUTTON_WIDTH
+        return width
+
     def update_active_preview_card(self, card: Card) -> None:
         if self.active_preview_dialog is None or self.active_preview_view is None:
             return
@@ -5198,10 +5209,12 @@ class MainWindow(QMainWindow):
         self.active_preview_dialog.setWindowTitle(card.name)
 
         preview_width, preview_height, available = self.preview_dialog_size_for_card(card)
+        dialog_width = preview_width + self.preview_dialog_navigation_width()
         self.active_preview_view.setMinimumSize(preview_width, preview_height)
         self.active_preview_view.updateGeometry()
-        self.active_preview_dialog.resize(preview_width, preview_height)
+        self.active_preview_dialog.setFixedSize(dialog_width, preview_height)
         if self.active_preview_dialog.layout() is not None:
+            self.active_preview_dialog.layout().invalidate()
             self.active_preview_dialog.layout().activate()
         self.active_preview_view.set_image_path(card.image_path)
         preview_view = self.active_preview_view
@@ -5224,8 +5237,9 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self, Qt.Popup | Qt.FramelessWindowHint)
         dialog.setWindowTitle(card.name)
         preview_width, preview_height, available = self.preview_dialog_size_for_card(card)
-        
-        dialog.resize(preview_width, preview_height)
+        dialog_width = preview_width + self.preview_dialog_navigation_width(source)
+
+        dialog.setFixedSize(dialog_width, preview_height)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -5241,7 +5255,7 @@ class MainWindow(QMainWindow):
         preview_view.cardCloseRequested.connect(dialog.close)
         if source in ("builder_pool", "deck_entries"):
             prev_button = QPushButton("<")
-            prev_button.setFixedWidth(42)
+            prev_button.setFixedWidth(PREVIEW_NAV_BUTTON_WIDTH)
             prev_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
             prev_button.setFocusPolicy(Qt.NoFocus)
             prev_button.setStyleSheet("font-size: 22px; font-weight: bold;")
@@ -5258,7 +5272,7 @@ class MainWindow(QMainWindow):
 
         if source in ("builder_pool", "deck_entries"):
             next_button = QPushButton(">")
-            next_button.setFixedWidth(42)
+            next_button.setFixedWidth(PREVIEW_NAV_BUTTON_WIDTH)
             next_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
             next_button.setFocusPolicy(Qt.NoFocus)
             next_button.setStyleSheet("font-size: 22px; font-weight: bold;")
