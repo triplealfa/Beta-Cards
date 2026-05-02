@@ -2654,6 +2654,7 @@ class MainWindow(QMainWindow):
         self.card_maker_preview = QLabel("Select an image to preview the card")
         self.card_maker_preview.setAlignment(Qt.AlignCenter)
         self.card_maker_preview.setMinimumHeight(320)
+        self.card_maker_preview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.card_maker_preview.setStyleSheet("border: 1px solid #666;")
         preview_and_form.addWidget(self.card_maker_preview, 0, 0)
 
@@ -5288,6 +5289,10 @@ class MainWindow(QMainWindow):
         self.active_preview_card_id = ""
 
     def show_card_preview_from_path(self, image_path: str, label: QLabel, zoom: float = 1.0) -> None:
+        def preview_target_size() -> QSize:
+            rect = label.contentsRect()
+            return QSize(max(1, int(rect.width() * zoom)), max(1, int(rect.height() * zoom)))
+
         if not image_path or not Path(image_path).exists():
             label.setPixmap(QPixmap())
             label.setText("No image available")
@@ -5300,17 +5305,14 @@ class MainWindow(QMainWindow):
 
         if image_path.lower().endswith(".gif"):
             self._card_maker_movie = QMovie(image_path)
-            # Capture the stable size of the label at the start of playback 
-            # to prevent the width/height feedback loop during updates.
-            self._card_maker_ref_size = (label.width(), label.height())
+            # Capture the stable content size at the start of playback to prevent
+            # the frame/pixmap size hint feedback loop during updates.
+            self._card_maker_ref_size = preview_target_size()
 
             def update_gif_frame():
                 pixmap = self._card_maker_movie.currentPixmap()
                 if not pixmap.isNull() and self._card_maker_ref_size:
-                    ref_w, ref_h = self._card_maker_ref_size
-                    target_width = max(1, int(ref_w * zoom))
-                    target_height = max(1, int(ref_h * zoom))
-                    scaled = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled = pixmap.scaled(self._card_maker_ref_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     label.setPixmap(scaled)
                     label.setText("")
 
@@ -5324,9 +5326,7 @@ class MainWindow(QMainWindow):
                 label.setPixmap(QPixmap())
                 label.setText("No image available")
                 return
-            target_width = max(1, int(label.width() * zoom))
-            target_height = max(1, int(label.height() * zoom))
-            scaled = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled = pixmap.scaled(preview_target_size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             label.setPixmap(scaled)
             label.setText("")
 
