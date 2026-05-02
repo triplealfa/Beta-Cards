@@ -34,8 +34,8 @@ except ImportError:
     winsound = None
 
 from odt_rules_parser import load_rules_as_html
-from PySide6.QtCore import QEvent, QIODevice, QModelIndex, QRect, QSize, QTimer, Qt, QUrl, Signal, QItemSelectionModel
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen, QMovie, QTextDocument
+from PySide6.QtCore import QBuffer, QEvent, QIODevice, QModelIndex, QRect, QSize, QTimer, Qt, QUrl, Signal, QItemSelectionModel
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QIcon, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QScreen, QMovie, QTextDocument
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices, QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -904,6 +904,7 @@ class ZoomableCardView(QGraphicsView):
         self.placeholder_text = "No Active Game"
         self.original_pixmap = QPixmap()
         self.movie: Optional[QMovie] = None
+        self.movie_buffer: Optional[QBuffer] = None
         self.user_zoom = 1.0
         self.max_user_zoom = 6.0
         self.auto_fit_can_upscale = True
@@ -934,31 +935,56 @@ class ZoomableCardView(QGraphicsView):
     def show_placeholder(self, text: str) -> None:
         self.placeholder_text = text
         self.original_pixmap = QPixmap()
-        if self.movie:
-            self.movie.stop()
-            self.movie = None
+        self.release_movie()
         self.pixmap_item.setPixmap(QPixmap())
         self.scene.setSceneRect(0, 0, 1, 1)
         self.user_zoom = 1.0
         self.resetTransform()
         self.viewport().update()
 
+    def release_movie(self) -> None:
+        if self.movie:
+            try:
+                self.movie.frameChanged.disconnect(self._on_gif_primed_update)
+            except (RuntimeError, TypeError):
+                pass
+            self.movie.stop()
+            self.movie.deleteLater()
+            self.movie = None
+        if self.movie_buffer:
+            self.movie_buffer.close()
+            self.movie_buffer.deleteLater()
+            self.movie_buffer = None
+
+    def release_image(self) -> None:
+        self.release_movie()
+        self.original_pixmap = QPixmap()
+        self.pixmap_item.setPixmap(QPixmap())
+        self.scene.setSceneRect(0, 0, 1, 1)
+
     def set_image_path(self, image_path: str) -> None:        
         if not image_path or not Path(image_path).exists():
             self.show_placeholder("No image available")
             return
 
-        # Cleanup previous movie if any
-        if self.movie:
-            self.movie.stop()
-            self.movie = None
+        self.release_movie()
 
         if image_path.lower().endswith(".gif"):
-            self.movie = QMovie(image_path)
+            try:
+                gif_data = Path(image_path).read_bytes()
+            except OSError:
+                self.show_placeholder("No image available")
+                return
+            self.movie_buffer = QBuffer(self)
+            self.movie_buffer.setData(gif_data)
+            if not self.movie_buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+                self.show_placeholder("No image available")
+                return
+            self.movie = QMovie(self.movie_buffer, b"gif", self)
             self.movie.frameChanged.connect(self._on_gif_primed_update)
             self.movie.start()
             # For GIF, we'll use the first frame to set up scaling
-            pixmap = QPixmap(image_path)
+            pixmap = self.movie.currentPixmap()
             if pixmap.isNull():
                 self.show_placeholder("No image available")
                 return
@@ -2354,6 +2380,11 @@ class MainWindow(QMainWindow):
         use_default_button = QPushButton("Use Default Folder")
         use_default_button.clicked.connect(self.use_default_cards_folder)
         button_row.addWidget(use_default_button)
+
+        open_folder_button = QPushButton("Open Cards Folder")
+        open_folder_button.clicked.connect(self.open_cards_folder)
+        button_row.addWidget(open_folder_button)
+
         button_row.addStretch(1)
         cards_layout.addLayout(button_row)
 
@@ -2368,6 +2399,7 @@ class MainWindow(QMainWindow):
         self.min_deck_size_spin = QSpinBox()
         self.min_deck_size_spin.setMinimum(1)
         self.min_deck_size_spin.setMaximum(999)
+        self.min_deck_size_spin.setFixedWidth(96)
         self.min_deck_size_spin.setValue(self.min_deck_size())
         self.min_deck_size_spin.valueChanged.connect(self.on_min_deck_size_changed)
         gameplay_form.addRow("Minimum Deck Size", self.min_deck_size_spin)
@@ -2386,11 +2418,13 @@ class MainWindow(QMainWindow):
         self.play_timer_game_start_minutes_spin = QSpinBox()
         self.play_timer_game_start_minutes_spin.setMinimum(0)
         self.play_timer_game_start_minutes_spin.setMaximum(599)
+        self.play_timer_game_start_minutes_spin.setFixedWidth(84)
         self.play_timer_game_start_minutes_spin.setValue(self.play_timer_game_start_seconds() // 60)
         self.play_timer_game_start_minutes_spin.valueChanged.connect(self.on_play_timer_game_start_duration_changed)
         self.play_timer_game_start_seconds_spin = QSpinBox()
         self.play_timer_game_start_seconds_spin.setMinimum(0)
         self.play_timer_game_start_seconds_spin.setMaximum(59)
+        self.play_timer_game_start_seconds_spin.setFixedWidth(84)
         self.play_timer_game_start_seconds_spin.setValue(self.play_timer_game_start_seconds() % 60)
         self.play_timer_game_start_seconds_spin.valueChanged.connect(self.on_play_timer_game_start_duration_changed)
         warmup_row.addWidget(QLabel("Min"))
@@ -2408,11 +2442,13 @@ class MainWindow(QMainWindow):
         self.play_timer_draw_minutes_spin = QSpinBox()
         self.play_timer_draw_minutes_spin.setMinimum(0)
         self.play_timer_draw_minutes_spin.setMaximum(599)
+        self.play_timer_draw_minutes_spin.setFixedWidth(84)
         self.play_timer_draw_minutes_spin.setValue(self.play_timer_draw_seconds() // 60)
         self.play_timer_draw_minutes_spin.valueChanged.connect(self.on_play_timer_draw_duration_changed)
         self.play_timer_draw_seconds_spin = QSpinBox()
         self.play_timer_draw_seconds_spin.setMinimum(0)
         self.play_timer_draw_seconds_spin.setMaximum(59)
+        self.play_timer_draw_seconds_spin.setFixedWidth(84)
         self.play_timer_draw_seconds_spin.setValue(self.play_timer_draw_seconds() % 60)
         self.play_timer_draw_seconds_spin.valueChanged.connect(self.on_play_timer_draw_duration_changed)
         draw_row.addWidget(QLabel("Min"))
@@ -2444,6 +2480,7 @@ class MainWindow(QMainWindow):
         deck_builder_group = QGroupBox("Deck Builder")
         deck_builder_form = QFormLayout(deck_builder_group)
         self.default_card_author_input = QLineEdit()
+        self.default_card_author_input.setMaximumWidth(360)
         self.default_card_author_input.setPlaceholderText("Optional default author name")
         self.default_card_author_input.setText(self.default_card_author())
         self.default_card_author_input.textChanged.connect(self.on_default_card_author_changed)
@@ -2470,6 +2507,7 @@ class MainWindow(QMainWindow):
         self.metronome_audio_warmup_spin.setMaximum(5000)
         self.metronome_audio_warmup_spin.setSuffix(" ms")
         self.metronome_audio_warmup_spin.setSingleStep(100)
+        self.metronome_audio_warmup_spin.setFixedWidth(104)
         self.metronome_audio_warmup_spin.setValue(self.metronome_audio_warmup_ms())
         self.metronome_audio_warmup_spin.setEnabled(self.metronome_audio_warmup_enabled())
         self.metronome_audio_warmup_spin.valueChanged.connect(self.on_metronome_audio_warmup_ms_changed)
@@ -2503,25 +2541,31 @@ class MainWindow(QMainWindow):
 
         reset_metronome_colors_button = QPushButton("Reset Metronome Colors")
         reset_metronome_colors_button.clicked.connect(self.reset_metronome_colors)
-        audio_form.addRow(reset_metronome_colors_button)
+        reset_metronome_colors_row = QHBoxLayout()
+        reset_metronome_colors_row.addWidget(reset_metronome_colors_button)
+        reset_metronome_colors_row.addStretch(1)
+        audio_form.addRow(reset_metronome_colors_row)
         self.refresh_metronome_color_swatches()
         
         self.max_metronome_bpm_spin = QSpinBox()
         self.max_metronome_bpm_spin.setMinimum(20)
         self.max_metronome_bpm_spin.setMaximum(2000)
         self.max_metronome_bpm_spin.setSingleStep(10)
+        self.max_metronome_bpm_spin.setFixedWidth(96)
         self.max_metronome_bpm_spin.setValue(self.max_metronome_bpm())
         self.max_metronome_bpm_spin.valueChanged.connect(self.on_max_metronome_bpm_changed)
         audio_form.addRow("Maximum Metronome BPM", self.max_metronome_bpm_spin)
         self.default_metronome_bpm_spin = QSpinBox()
         self.default_metronome_bpm_spin.setMinimum(20)
         self.default_metronome_bpm_spin.setMaximum(self.max_metronome_bpm())
+        self.default_metronome_bpm_spin.setFixedWidth(96)
         self.default_metronome_bpm_spin.setValue(self.default_metronome_bpm())
         self.default_metronome_bpm_spin.valueChanged.connect(self.on_default_metronome_bpm_changed)
         audio_form.addRow("Default Metronome BPM", self.default_metronome_bpm_spin)
         self.default_metronome_beats_spin = QSpinBox()
         self.default_metronome_beats_spin.setMinimum(1)
         self.default_metronome_beats_spin.setMaximum(12)
+        self.default_metronome_beats_spin.setFixedWidth(84)
         self.default_metronome_beats_spin.setValue(self.default_metronome_beats())
         self.default_metronome_beats_spin.valueChanged.connect(self.on_default_metronome_beats_changed)
         audio_form.addRow("Default Metronome Beats", self.default_metronome_beats_spin)
@@ -3454,6 +3498,15 @@ class MainWindow(QMainWindow):
         self.config.pop("cards_folder", None)
         self.save_app_config()
         self.load_saved_folder()
+
+    def open_cards_folder(self) -> None:
+        folder = self.cards_folder or self.get_card_source_folder()
+        if not folder.exists():
+            self.warning_box("Cards folder not found", f"The cards folder does not exist:\n{folder}")
+            return
+
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            self.warning_box("Could not open folder", f"The cards folder could not be opened:\n{folder}")
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """Handle keyboard shortcuts."""
@@ -5291,14 +5344,31 @@ class MainWindow(QMainWindow):
         self.active_preview_source = source
         self.active_preview_card_id = card.id
         self.update_active_preview_navigation_buttons()
-        dialog.finished.connect(self.on_preview_dialog_closed)
+        dialog.finished.connect(
+            lambda result, closed_dialog=dialog, view=preview_view: self.on_preview_dialog_closed(
+                result,
+                closed_dialog,
+                view,
+            )
+        )
         dialog.show()
         dialog.move(
             available.center().x() - dialog.width() // 2,
             available.center().y() - dialog.height() // 2,
         )
 
-    def on_preview_dialog_closed(self, _result: int) -> None:
+    def on_preview_dialog_closed(
+        self,
+        _result: int,
+        closed_dialog: Optional[QDialog] = None,
+        preview_view: Optional[ZoomableCardView] = None,
+    ) -> None:
+        if preview_view is not None:
+            preview_view.release_image()
+        if closed_dialog is not None:
+            closed_dialog.deleteLater()
+        if closed_dialog is not None and closed_dialog is not self.active_preview_dialog:
+            return
         self.active_preview_dialog = None
         self.active_preview_view = None
         self.active_preview_prev_button = None
