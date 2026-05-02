@@ -905,6 +905,7 @@ class ZoomableCardView(QGraphicsView):
         self.movie: Optional[QMovie] = None
         self.user_zoom = 1.0
         self.max_user_zoom = 6.0
+        self.auto_fit_can_upscale = True
         self.manual_zoom_enabled = True
         self.manual_pan_enabled = True
         self._is_dragging = False
@@ -993,10 +994,13 @@ class ZoomableCardView(QGraphicsView):
         if viewport_size.width() <= 0 or viewport_size.height() <= 0:
             return 1.0
         pixmap_size = self.original_pixmap.size()
-        return min(
+        fit_scale = min(
             viewport_size.width() / max(1, pixmap_size.width()),
             viewport_size.height() / max(1, pixmap_size.height()),
         )
+        if not self.auto_fit_can_upscale:
+            return min(1.0, fit_scale)
+        return fit_scale
 
     def _clamp_relative_position(self, value: float) -> float:
         return max(0.0, min(1.0, value))
@@ -5171,15 +5175,7 @@ class MainWindow(QMainWindow):
             return
         self.update_active_preview_card(card)
 
-    def update_active_preview_card(self, card: Card) -> None:
-        if self.active_preview_dialog is None or self.active_preview_view is None:
-            return
-        #self.active_preview_view.reset_view() #DEBUG Test Code
-        self.active_preview_card_id = card.id
-        self.active_preview_dialog.setWindowTitle(card.name)
-        self.active_preview_view.set_image_path(card.image_path)
-
-        # Update dialog size during navigation
+    def preview_dialog_size_for_card(self, card: Card) -> tuple[int, int, QRect]:
         screen = self.screen() or QGuiApplication.primaryScreen()
         available = screen.availableGeometry() if screen else self.geometry()
         max_width = max(480, int(available.width() * 0.92))
@@ -5193,9 +5189,27 @@ class MainWindow(QMainWindow):
             preview_width = min(max_width, max(480, pixmap.width()))
             preview_height = min(max_height, max(640, pixmap.height()))
 
-        self.active_preview_dialog.resize(preview_width, preview_height)
+        return preview_width, preview_height, available
+
+    def update_active_preview_card(self, card: Card) -> None:
+        if self.active_preview_dialog is None or self.active_preview_view is None:
+            return
+        self.active_preview_card_id = card.id
+        self.active_preview_dialog.setWindowTitle(card.name)
+
+        preview_width, preview_height, available = self.preview_dialog_size_for_card(card)
         self.active_preview_view.setMinimumSize(preview_width, preview_height)
-        
+        self.active_preview_view.updateGeometry()
+        self.active_preview_dialog.resize(preview_width, preview_height)
+        if self.active_preview_dialog.layout() is not None:
+            self.active_preview_dialog.layout().activate()
+        self.active_preview_view.set_image_path(card.image_path)
+        preview_view = self.active_preview_view
+        QTimer.singleShot(
+            0,
+            lambda view=preview_view: view.zoom_to_default() if view is self.active_preview_view else None,
+        )
+
         # Re-center the dialog
         self.active_preview_dialog.move(
             available.center().x() - self.active_preview_dialog.width() // 2,
@@ -5209,18 +5223,7 @@ class MainWindow(QMainWindow):
             self.active_preview_dialog.close()
         dialog = QDialog(self, Qt.Popup | Qt.FramelessWindowHint)
         dialog.setWindowTitle(card.name)
-        screen = self.screen() or QGuiApplication.primaryScreen()
-        available = screen.availableGeometry() if screen else self.geometry()
-        max_width = max(480, int(available.width() * 0.92))
-        max_height = max(640, int(available.height() * 0.92))
-
-        pixmap = QPixmap(card.image_path) if card.image_path and Path(card.image_path).exists() else QPixmap()
-        if pixmap.isNull():
-            preview_width = min(700, max_width)
-            preview_height = min(900, max_height)
-        else:
-            preview_width = min(max_width, max(480, pixmap.width()))
-            preview_height = min(max_height, max(640, pixmap.height()))
+        preview_width, preview_height, available = self.preview_dialog_size_for_card(card)
         
         dialog.resize(preview_width, preview_height)
         layout = QVBoxLayout(dialog)
@@ -5231,6 +5234,7 @@ class MainWindow(QMainWindow):
         content_row.setSpacing(0)
 
         preview_view = ZoomableCardView()
+        preview_view.auto_fit_can_upscale = False
         preview_view.setStyleSheet("border: 1px solid #666; background: #111;")
         preview_view.setMinimumSize(preview_width, preview_height)
         preview_view.set_image_path(card.image_path)
