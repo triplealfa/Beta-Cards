@@ -84,8 +84,12 @@ APP_STORAGE_NAME = "BetaCards"
 APP_VERSION = "0.3.3"
 APP_WINDOWS_APP_ID = "TripleAlfa.BetaCards"
 APP_RELEASE_NOTES = """
-The first alpha release of Beta Cards.
-This release is for testing purposes only.
+- Added color options for the metronome bar.
+- Added 'Open Cards Folder'-button to options tab.
+- Improved text formatting for pasted text in the Card Maker's Effect field.
+- Adjusted sizes of elements in the options tab.
+- Fixed card preview scaling issues when switching between images of different sizes.
+- Changed .gif loading and unloading logic.
 """.strip()
 WM_SETICON = 0x0080
 ICON_SMALL = 0
