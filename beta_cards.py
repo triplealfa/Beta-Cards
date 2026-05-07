@@ -4974,7 +4974,14 @@ class MainWindow(QMainWindow):
             image_path=card_data.get("image_path", ""),
             source=card_data.get("source", ""),
         )
-        self.open_card_preview_dialog(card)
+        source = ""
+        if item.listWidget() is self.play_deck_list:
+            source = "play_deck_list"
+        elif item.listWidget() is self.discard_list:
+            source = "discard_list"
+        elif item.listWidget() is self.draw_log_list:
+            source = "draw_log_list"
+        self.open_card_preview_dialog(card, source=source)
 
     def show_current_play_card_preview(self) -> None:        
         if not self.play_current_card_id:
@@ -5144,6 +5151,10 @@ class MainWindow(QMainWindow):
             if self.handle_active_preview_keypress(event):
                 return True
 
+        if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+            if self.handle_active_preview_mouse_button(event):
+                return True
+
         if event.type() == QEvent.MouseButtonPress:
             global_pos = event.globalPosition().toPoint()
             if not self.active_preview_dialog.frameGeometry().contains(global_pos):
@@ -5157,22 +5168,86 @@ class MainWindow(QMainWindow):
 
         return super().eventFilter(watched, event)
 
+    def navigate_active_preview(self, direction: int) -> bool:
+        if self.active_preview_source == "builder_pool":
+            self.navigate_builder_pool_preview(direction)
+            return True
+
+        if self.active_preview_source == "deck_entries":
+            self.navigate_deck_entry_preview(direction)
+            return True
+
+        if self.active_preview_source in ("play_deck_list", "discard_list", "draw_log_list"):
+            self.navigate_play_list_preview(direction)
+            return True
+
+        return False
+
     def handle_active_preview_keypress(self, event: QKeyEvent) -> bool:
         key = event.key()
         if key not in (Qt.Key_Left, Qt.Key_Right):
             return False
 
-        if self.active_preview_source == "builder_pool":
-            direction = -1 if key == Qt.Key_Left else 1
-            self.navigate_builder_pool_preview(direction)
-            return True
+        direction = -1 if key == Qt.Key_Left else 1
+        return self.navigate_active_preview(direction)
 
-        if self.active_preview_source == "deck_entries":
-            direction = -1 if key == Qt.Key_Left else 1
-            self.navigate_deck_entry_preview(direction)
-            return True
+    def handle_active_preview_mouse_button(self, event) -> bool:
+        button = event.button()
+        if button == Qt.BackButton:
+            direction = -1
+        elif button == Qt.ForwardButton:
+            direction = 1
+        else:
+            return False
 
-        return False
+        if event.type() == QEvent.MouseButtonPress:
+            self.navigate_active_preview(direction)
+        event.accept()
+        return True
+
+    def active_play_preview_list(self) -> Optional[DeckListWidget]:
+        if self.active_preview_source == "play_deck_list":
+            return self.play_deck_list
+        if self.active_preview_source == "discard_list":
+            return self.discard_list
+        if self.active_preview_source == "draw_log_list":
+            return self.draw_log_list
+        return None
+
+    def navigate_play_list_preview(self, direction: int) -> None:
+        list_widget = self.active_play_preview_list()
+        if list_widget is None or list_widget.count() <= 0:
+            return
+
+        current_row = list_widget.currentRow()
+        if current_row < 0:
+            current_row = 0
+        new_row = max(0, min(list_widget.count() - 1, current_row + direction))
+        if new_row == current_row:
+            return
+
+        list_widget.setCurrentRow(new_row)
+        item = list_widget.item(new_row)
+        if item is None:
+            return
+
+        card_id = item.data(Qt.UserRole)
+        play_deck = self.get_selected_play_deck()
+        card_data = self.get_card_for_deck_entry(card_id, play_deck)
+        card = Card(
+            id=card_data.get("id", card_id),
+            name=card_data.get("name", card_id),
+            value=card_data.get("value", ""),
+            faction=card_data.get("faction", ""),
+            effect=card_data.get("effect", ""),
+            set_name=card_data.get("set_name", ""),
+            card_number=card_data.get("card_number", ""),
+            artist_name=card_data.get("artist_name", ""),
+            card_author=card_data.get("card_author", ""),
+            image_path=card_data.get("image_path", ""),
+            source=card_data.get("source", ""),
+        )
+        self.update_active_preview_card(card)
 
     def navigate_deck_entry_preview(self, direction: int) -> None:
         if self.active_preview_source != "deck_entries":
