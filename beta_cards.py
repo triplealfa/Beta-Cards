@@ -897,6 +897,7 @@ class BuilderDeckTreeWidget(QTreeWidget):
 class ZoomableCardView(QGraphicsView):
     cardPreviewRequested = Signal()
     cardCloseRequested = Signal()
+    cardDoubleClicked = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -1149,6 +1150,16 @@ class ZoomableCardView(QGraphicsView):
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.has_image():
+            self._is_dragging = False
+            self._last_drag_pos = None
+            self.viewport().unsetCursor()
+            self.cardDoubleClicked.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
         if self._is_dragging and self._last_drag_pos is not None:
@@ -3944,6 +3955,15 @@ class MainWindow(QMainWindow):
         self.render_builder_deck_contents()
         self.refresh_builder_pool_counts_only()
 
+    def add_active_preview_card_to_deck(self) -> None:
+        if self.active_preview_source != "builder_pool" or not self.active_preview_card_id:
+            return
+        if self.active_preview_card_id not in self.library_by_id:
+            return
+        self.builder_entries[self.active_preview_card_id] = self.builder_entries.get(self.active_preview_card_id, 0) + 1
+        self.render_builder_deck_contents()
+        self.refresh_builder_pool_counts_only()
+
     def show_builder_pool_context_menu(self, item: QListWidgetItem) -> None:
         if not item:
             return
@@ -5310,6 +5330,8 @@ class MainWindow(QMainWindow):
         preview_view.setMinimumSize(preview_width, preview_height)
         preview_view.set_image_path(card.image_path)
         preview_view.cardCloseRequested.connect(dialog.close)
+        if source == "builder_pool":
+            preview_view.cardDoubleClicked.connect(self.add_active_preview_card_to_deck)
         if source in ("builder_pool", "deck_entries"):
             prev_button = QPushButton("<")
             prev_button.setFixedWidth(PREVIEW_NAV_BUTTON_WIDTH)
